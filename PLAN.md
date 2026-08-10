@@ -4,8 +4,9 @@ Roadmap for the Android publisher app that embeds the `strym-core` via its
 frozen UniFFI facade. This is a **separate repo** from the core; the core is
 consumed read-only as a pinned git dependency (`android/rust/Cargo.toml`).
 
-State: **Phase A in progress**. Core API 1.0 frozen; native build pipeline
-wired, Gradle scaffold in place, CI builds installable APKs.
+State: **Phase A complete**. Core API 1.0 frozen; native build pipeline wired,
+Gradle scaffold in place, CI builds installable APKs, and the smoke app runs the
+full session lifecycle on a connected phone.
 
 ---
 
@@ -112,16 +113,23 @@ Done:
 3. **Bindings generated once and committed** (`generate-bindings.sh`, bindgen
    pinned to the core's uniffi 0.32).
 4. **Gradle scaffold.** Wrapper, version catalog, `app` module with
-   `jniLibs` + `java/uniffi` source sets, JNA dependency, R8 rules.
+   `jniLibs` + `java/uniffi` source sets, JNA dependency, R8 rules. JNA is pulled
+   as `net.java.dev.jna:jna:5.14.0@aar` (the AAR bundles `libjnidispatch.so` per
+   ABI — the plain JAR lacks Android natives and crashes at startup).
 5. **CI-first.** `ci.yml` builds `.so` (cargo-ndk) + APK, runs unit tests,
    uploads the APK artifact, and self-prunes caches; `bindings-check.yml`
    diff-verifies committed bindings when the core rev changes.
 6. **Smoke app.** `MainActivity` builds a `StreamSession` on the device and
    exercises `configure_codecs`/`push`/`stop`; instrumented test (Phase B
    scaffold) asserts the lifecycle.
+7. **Device verification.** APK from CI installed on a phone (Mi A1, arm64-v8a)
+   via adb; the smoke app runs the session lifecycle
+   (`IDLE → CONNECTING → IDLE` on a dead loopback) without crashing, proving the
+   `.so`, JNA dispatch lib, and bindings work on hardware. Added the missing
+   `INTERNET` permission along the way.
 
-Remaining: instrumented lifecycle test on a real device (emulator not viable on
-3.6 GB dev box — run `connectedDebugAndroidTest` from CI or a connected phone).
+Deferred to Phase B: the instrumented lifecycle test (`connectedDebugAndroidTest`)
+— the smoke app already proves the lifecycle manually on the connected phone.
 
 Exit criteria: CI builds an installable APK; `./scripts/install.sh` puts it on a
 device; the smoke app reports the session state machine without crashing.
