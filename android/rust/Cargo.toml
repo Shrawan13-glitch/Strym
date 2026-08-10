@@ -1,0 +1,28 @@
+[package]
+name = "stream_android_bridge"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# The platform bridge: this crate pulls the core's UniFFI facade as a pinned
+# git dependency and re-exports it so the cdylib carries every exported symbol.
+[lib]
+name = "stream_ffi"
+crate-type = ["cdylib"]
+
+[dependencies]
+stream-ffi = { git = "https://github.com/Shrawan13-glitch/strym-core.git", rev = "c05552d" }
+# Bindgen must match the pinned core's uniffi major/minor exactly. Kept as a
+# regular dependency (the core's ffi crate does the same) so `cargo build`
+# compiles the bin target.
+uniffi = { version = "=0.32", features = ["cli"] }
+
+# Direct dep on the core for the ingest-server example (the FFI facade doesn't
+# expose the ingest side). Same pinned rev.
+[dev-dependencies]
+stream = { git = "https://github.com/Shrawan13-glitch/strym-core.git", rev = "c05552d" }
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi_bindgen.rs"
+test = false

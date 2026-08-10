@@ -1,0 +1,21 @@
+# Build outputs
+build/
+target/
+*.so
+
+# Generated (never committed — see PLAN.md engineering rules)
+app/src/main/java/uniffi/
+app/src/main/jniLibs/
+
+# IDE
+.idea/
+*.iml
+local.properties
+.kotlin/
+
+# Gradle
+.gradle/
+captures/
+
+# OS
+.DS_Store
