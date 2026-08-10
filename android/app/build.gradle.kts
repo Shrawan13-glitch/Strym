@@ -36,6 +36,6 @@ android {
 
 dependencies {
     implementation(libs.androidx.core)
-    implementation(libs.jna)
+    implementation("net.java.dev.jna:jna:5.14.0@aar")
     testImplementation(libs.junit)
 }
