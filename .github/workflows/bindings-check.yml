@@ -1,0 +1,57 @@
+name: Bindings check
+
+# Verifies the committed Kotlin bindings match the pinned core rev.
+#
+# Runs only when something that could change the bindings changes:
+#   - the pinned core rev (rust/Cargo.toml / Cargo.lock)
+#   - the workflow / scripts that generate bindings
+# Since the bindings are committed, normal CI never regenerates them.
+on:
+  pull_request:
+    paths:
+      - "android/rust/Cargo.toml"
+      - "android/rust/Cargo.lock"
+      - "android/rust/src/bin/uniffi_bindgen.rs"
+      - "android/scripts/generate-bindings.sh"
+      - ".github/workflows/bindings-check.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: bindings-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Regenerate + diff committed bindings
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: android/rust
+
+      - name: Build bridge (host .so for bindgen)
+        working-directory: android/rust
+        run: cargo build --locked
+
+      - name: Regenerate bindings
+        working-directory: android
+        run: |
+          ./scripts/generate-bindings.sh
+
+      - name: Diff committed bindings
+        run: |
+          if ! git diff --quiet -- android/app/src/main/java/uniffi; then
+            echo "::error::Committed bindings are out of date for the pinned core rev."
+            echo "::error::Run: ./android/scripts/generate-bindings.sh  and commit the diff."
+            git diff --stat -- android/app/src/main/java/uniffi
+            exit 1
+          fi
+          echo "bindings up to date"

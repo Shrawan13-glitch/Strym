@@ -1,13 +1,27 @@
-# `stream-platform` PLAN — Android live-streaming app
+# `Strym` PLAN — Android live-streaming app
 
-Roadmap for the Android publisher app that embeds the [core] via its frozen
-UniFFI facade. This is a **separate repo** from the core; the core is consumed
-read-only as a pinned git dependency.
+Roadmap for the Android publisher app that embeds the `strym-core` via its
+frozen UniFFI facade. This is a **separate repo** from the core; the core is
+consumed read-only as a pinned git dependency (`android/rust/Cargo.toml`).
 
 State: **Phase A in progress**. Core API 1.0 frozen; native build pipeline
-being wired.
+wired, Gradle scaffold in place, CI builds installable APKs.
 
 ---
+
+## Build model (CI-first)
+
+- **Bindings are committed.** `app/src/main/java/uniffi/stream_ffi/stream_ffi.kt`
+  is checked in and only regenerated when the pinned core rev changes
+  (`./scripts/generate-bindings.sh`). Normal CI never regenerates them; a
+  `bindings-check` workflow diff-verifies them only when the rev/scripts change.
+- **Native lib is built in CI.** `cargo-ndk` cross-compiles `libstream_ffi.so`
+  (arm64-v8a + x86_64, release) into `jniLibs/` — git-ignored, produced per run.
+- **APK is built in CI**, uploaded as a `strym-debug-apk` artifact; install on a
+  device with `./scripts/install.sh` (downloads the artifact + `adb install`).
+- **Caches are automatic and self-pruning.** Rust + Gradle caches key off
+  `Cargo.lock`/build inputs; CI deletes all but the freshest few cache entries
+  after each run (see `ci.yml` "Prune stale caches").
 
 ## Architecture (one page)
 
@@ -50,38 +64,36 @@ being wired.
   request an IDR when the session reports `Reconnecting`.
 - **No UI work off the main thread.** Listener callbacks arrive on the core's
   worker thread; hop to UI via `StateFlow`.
-- **Generated artifacts never committed.** `libstream_ffi.so`,
-  `uniffi/*.kt`, and build outputs are git-ignored.
+- **Bindings are committed, never regenerated in CI.** Regenerate only when the
+  pinned core rev changes; the `bindings-check` workflow guards drift.
 
 ### Module map
 
 ```text
 android/
 ├── rust/                    # thin crate pinning stream-ffi (git dep) → libstream_ffi.so
-│   └── Cargo.toml
+│   ├── Cargo.toml / Cargo.lock   # pinned core rev
+│   ├── src/bin/uniffi_bindgen.rs # bindgen matching pinned core's uniffi 0.32
+│   └── examples/ingest.rs        # host-side RTMP ingest (e2e + dev)
 ├── scripts/
 │   ├── build-native.sh      # cargo-ndk → jniLibs
-│   ├── generate-bindings.sh # uniffi-bindgen --library → java/uniffi
-│   └── ingest-server.sh     # run the core's RTMP server on host (e2e + dev)
+│   ├── generate-bindings.sh # uniffi-bindgen → java/uniffi (commit the result)
+│   ├── ingest-server.sh     # run the core's RTMP server on host (e2e + dev)
+│   └── install.sh           # fetch CI-built APK + adb install to a device
+├── Makefile                 # native / bindings / apk / test / install
+├── gradle/                  # wrapper + libs.versions.toml
 ├── app/
 │   ├── build.gradle.kts
-│   ├── src/main/kotlin/com/stream/platform/
-│   │   ├── StreamApp.kt             # Application: set_log_sink, max level
-│   │   ├── service/StreamService.kt # foreground service owning the session
-│   │   ├── session/StreamController.kt  # coordinator, clock, listener→StateFlow
-│   │   ├── capture/CameraFeed.kt    # CameraX + encoder surface provider
-│   │   ├── capture/AudioFeed.kt     # AudioRecord loop
-│   │   ├── encode/VideoEncoder.kt   # MediaCodec H.264 wrapper
-│   │   ├── encode/AudioEncoder.kt   # MediaCodec AAC wrapper
-│   │   ├── avc/NalUnit.kt           # AVCC↔Annex-B, AVCDecoderConfig builder
-│   │   └── ui/                      # Compose: connect screen, live screen
-│   └── src/main/java/uniffi/        # GENERATED Kotlin bindings (ignored)
-│   └── src/main/jniLibs/<abi>/      # GENERATED .so (ignored)
-└── gradle/libs.versions.toml
+│   ├── src/main/AndroidManifest.xml
+│   ├── src/main/java/com/strym/app/     # app code (MainActivity, Phase A smoke)
+│   ├── src/main/java/uniffi/            # COMMITTED Kotlin bindings (regenerate on core bump)
+│   ├── src/main/jniLibs/<abi>/          # built by CI, git-ignored
+│   └── proguard-rules.pro
+└── gradlew / gradlew.bat
 ```
 
-Toolchain: AGP 8.5+, Kotlin 2.0, Compose BOM, minSdk 26, targetSdk 35, NDK 27,
-`cargo-ndk`, pinned core tag `v1.0.0`.
+Toolchain: Gradle 8.10.2, AGP 8.7.3, Kotlin 2.0, JNA (UniFFI runtime),
+minSdk 26, targetSdk 35, NDK 27, `cargo-ndk`, pinned core rev `7e79c9c`.
 
 ---
 
@@ -90,25 +102,29 @@ Toolchain: AGP 8.5+, Kotlin 2.0, Compose BOM, minSdk 26, targetSdk 35, NDK 27,
 Goal: an APK that loads `libstream_ffi.so`, constructs a `StreamSession`, and
 drives its full lifecycle from Kotlin.
 
-Tasks:
+Done:
 
-1. **Pin the core.** `rust/Cargo.toml` depends on
-   `stream-ffi = { git = "<core>", tag = "v1.0.0" }`; `[lib] name = "stream_ffi"`
-   and re-export the scaffolding (`pub use stream_ffi::*;`) so the cdylib carries
-   every UniFFI symbol under `libstream_ffi.so`.
-2. **`scripts/build-native.sh`.** `cargo ndk -t arm64-v8a [-t x86_64] -o
-   app/src/main/jniLibs build -p stream_ffi --release` (debug builds use
-   arm64-v8a only for speed). Validate with `file`/`readelf` that symbols exist.
-3. **`scripts/generate-bindings.sh`.** `uniffi-bindgen generate --language
-   kotlin --library <debug .so> --out-dir app/src/main/java`.
-4. **Gradle wiring.** Version catalog; `cargo-ndk` as a preBuild task; a
-   `genBindings` task; `sourceSets` including `java/uniffi`; `loadLibrary`.
-5. **Smoke test (instrumented).** Build a `StreamSession` with a loopback
-   `SessionConfig`, call `start()`, observe `Connecting`, `stop()`, assert
-   `Stopped`. Run on an emulator via `gradle connectedDebugAndroidTest`.
+1. **Pin the core.** `rust/Cargo.toml` → `stream-ffi` git dep at rev `7e79c9c`;
+   `[lib] name = "stream_ffi"` re-exports the scaffolding so the cdylib carries
+   every UniFFI symbol under `libstream_ffi.so`. `Cargo.lock` committed.
+2. **`scripts/build-native.sh`.** `cargo ndk -t arm64-v8a -t x86_64 -o
+   app/src/main/jniLibs build -p stream_ffi --release` (debug: arm64 only).
+3. **Bindings generated once and committed** (`generate-bindings.sh`, bindgen
+   pinned to the core's uniffi 0.32).
+4. **Gradle scaffold.** Wrapper, version catalog, `app` module with
+   `jniLibs` + `java/uniffi` source sets, JNA dependency, R8 rules.
+5. **CI-first.** `ci.yml` builds `.so` (cargo-ndk) + APK, runs unit tests,
+   uploads the APK artifact, and self-prunes caches; `bindings-check.yml`
+   diff-verifies committed bindings when the core rev changes.
+6. **Smoke app.** `MainActivity` builds a `StreamSession` on the device and
+   exercises `configure_codecs`/`push`/`stop`; instrumented test (Phase B
+   scaffold) asserts the lifecycle.
 
-Exit criteria: green instrumented lifecycle smoke test on arm64 emulator; CI
-(GitHub Actions: rustup + NDK + cargo-ndk) builds the APK and runs the test.
+Remaining: instrumented lifecycle test on a real device (emulator not viable on
+3.6 GB dev box — run `connectedDebugAndroidTest` from CI or a connected phone).
+
+Exit criteria: CI builds an installable APK; `./scripts/install.sh` puts it on a
+device; the smoke app reports the session state machine without crashing.
 
 ---
 

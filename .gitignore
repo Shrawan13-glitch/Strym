@@ -1,11 +1,8 @@
 # Build outputs
 build/
 target/
-*.so
-
-# Generated (never committed — see PLAN.md engineering rules)
-app/src/main/java/uniffi/
 app/src/main/jniLibs/
+*.so
 
 # IDE
 .idea/
@@ -16,6 +13,9 @@ local.properties
 # Gradle
 .gradle/
 captures/
+
+# Ingest output from the local dev server
+ingest/
 
 # OS
 .DS_Store

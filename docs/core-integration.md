@@ -1,52 +1,55 @@
 # Building the core for Android
 
-The core repo is consumed **read-only** from this repo. It is pinned as a git
-dependency (or vendored submodule) and never edited here.
+The core repo (`strym-core`) is consumed **read-only** from this repo. It is
+pinned as a git dependency in `android/rust/Cargo.toml` and never edited here.
 
 ## Pinning the core
 
-Declare the dependency in `android/`'s Rust build as a git dependency:
-
 ```toml
-# Cargo.toml (android/rust/ — see PLAN.md Phase A)
 [dependencies]
-stream-ffi = { git = "<core-repo-url>", tag = "v1.0.0" }
+stream-ffi = { git = "https://github.com/Shrawan13-glitch/strym-core.git", rev = "7e79c9c" }
 ```
 
-Cargo resolves it into `~/.cargo/git`. Everything below assumes the checked-out
-core is at `$CORE` (a cargo git checkout, submodule, or `git clone` for local
-iteration).
+Cargo resolves it into `~/.cargo/git`. The bridge crate re-exports the
+scaffolding so the cdylib carries every UniFFI symbol under `libstream_ffi.so`.
 
-## Kotlin bindings
+## Kotlin bindings — committed, regenerated only on core bumps
 
-Generated, never committed:
+Unlike the core (which treats bindings as throwaway), **this repo commits the
+generated Kotlin bindings** so normal CI never regenerates them. Regenerate only
+when you bump the pinned rev:
 
 ```sh
-# Inside the core repo at the pinned commit:
-cargo build -p stream-ffi
-cargo run -p stream-ffi --bin uniffi-bindgen -- generate \
-  --language kotlin --no-format \
-  --out-dir <this-repo>/android/app/src/main/java \
-  --library target/debug/libstream_ffi.so
+cd android
+./scripts/generate-bindings.sh   # or: make bindings
+# commit the resulting app/src/main/java/uniffi/stream_ffi/stream_ffi.kt diff
 ```
 
-Output: `uniffi/stream_ffi.kt` (+ friends) under `java/`, ready for
-`kotlinSourceSets` to pick up.
+The `bindings-check` GitHub Action diff-verifies the committed bindings against
+the pinned core whenever the rev or the generator changes.
 
 ## Native library for Android
 
-Requires: Rust toolchain, the Android NDK, and `cargo-ndk`:
+Built in CI via `scripts/build-native.sh` (cargo-ndk):
 
 ```sh
-cargo install cargo-ndk
-rustup target add aarch64-linux-android armv7-linux-androideabi \
-  x86_64-linux-android i686-linux-android
-cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 \
-  -o app/src/main/jniLibs build -p stream-ffi --release
+cd android
+./scripts/build-native.sh release   # arm64-v8a + x86_64 → app/src/main/jniLibs/
+./scripts/build-native.sh debug     # arm64-v8a only, faster
 ```
 
-Produces `libstream_ffi.so` per ABI under `jniLibs/`. UniFFI's Kotlin side
-loads it with `System.loadLibrary("stream_ffi")`.
+Local prerequisites: Rust toolchain with android targets, Android NDK 27
+(`sdk.dir` in `local.properties` or `ANDROID_HOME`), and `cargo-ndk`. The
+resulting `.so` is git-ignored; UniFFI's Kotlin side loads it with
+`System.loadLibrary("stream_ffi")`.
 
 > Keep the arch list minimal in debug (arm64-v8a only) to cut build time;
-> expand for release.
+> CI builds both ABIs for the release APK.
+
+## Getting the APK onto a device
+
+```sh
+cd android
+./scripts/install.sh        # latest CI build → adb install → launch
+./scripts/install.sh <run>  # a specific CI run
+```

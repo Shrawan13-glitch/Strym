@@ -1,23 +1,26 @@
 #!/usr/bin/env bash
-# Generate Kotlin bindings from the pinned core into app/src/main/java.
+# Regenerate the Kotlin bindings into the committed location.
 #
-# Requires a debug .so built by build-native.sh debug (the bindgen reads the
-# library's embedded metadata, so any ABI works). The `uniffi-bindgen` bin in
-# this crate matches the pinned core's uniffi 0.32.
+# The bindings are COMMITTED (see PLAN.md): they change only when the pinned
+# core rev changes. Run this manually after bumping the rev in rust/Cargo.toml,
+# then commit the diff. CI verifies they are up to date via .github/workflows/
+# bindings-check.yml instead of regenerating on every build.
+#
+# Requires a debug build of the pinned core's library.
 set -euo pipefail
 cd "$(dirname "$0")/../rust"
 
-LIB="app/src/main/jniLibs/arm64-v8a/libstream_ffi.so"
-OUT="../app/src/main/java"
+LIB="target/debug/libstream_ffi.so"
+OUT="$(cd .. && pwd)/app/src/main/java"
 
-# The bridge crate builds the .so; find it via cargo-ndk output convention.
-LIB="$(find .. -name libstream_ffi.so -path '*arm64-v8a*' | head -1)"
-[[ -n "$LIB" ]] || { echo "missing arm64-v8a .so — run ./scripts/build-native.sh debug first" >&2; exit 1; }
+[[ -f "$LIB" ]] || {
+  echo "missing $LIB — run: cargo build" >&2
+  exit 1
+}
 
-echo ">> generating Kotlin bindings from $LIB"
-mkdir -p "$OUT"
+echo ">> regenerating Kotlin bindings from pinned core"
 cargo run --bin uniffi-bindgen -- generate \
   --language kotlin --no-format \
   --out-dir "$OUT" --library "$LIB"
 
-echo ">> done: $OUT/uniffi/"
+echo ">> done: $OUT/uniffi/stream_ffi/stream_ffi.kt"
