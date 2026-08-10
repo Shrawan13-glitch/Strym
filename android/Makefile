@@ -1,25 +1,35 @@
-# Strym Android — common tasks.
-# Examples:
-#   make native-release      build .so for arm64-v8a + x86_64
-#   make apk                 assembleDebug + unit tests
-#   make install             install CI-built APK on a connected device
+.DEFAULT_GOAL := help
 
-.PHONY: native native-release apk test install bindings
+.PHONY: help native debug bindings apk android-test install clean
 
-native:            # arm64-v8a debug .so (fast)
-	./scripts/build-native.sh debug
+help:
+	@echo "Strym Android build targets"
+	@echo "  make native      - release .so for arm64-v8a + x86_64 into jniLibs/"
+	@echo "  make debug       - arm64-v8a-only .so (faster local turnaround)"
+	@echo "  make bindings    - regenerate Kotlin bindings from the pinned core"
+	@echo "  make apk         - debug APK via Gradle"
+	@echo "  make android-test - instrumented lifecycle tests on a connected device"
+	@echo "  make install     - latest CI APK -> adb install -> launch"
+	@echo "  make clean       - cargo clean + gradle clean"
 
-native-release:    # arm64-v8a + x86_64 release .so
+native:
 	./scripts/build-native.sh release
 
-bindings:          # regenerate committed Kotlin bindings (after core-rev bump)
+debug:
+	./scripts/build-native.sh debug
+
+bindings:
 	./scripts/generate-bindings.sh
 
-apk:               # assemble debug APK + run unit tests
+apk:
 	./gradlew --no-daemon assembleDebug testDebugUnitTest
 
-test:              # JVM unit tests only
-	./gradlew --no-daemon testDebugUnitTest
+android-test:
+	./gradlew --no-daemon connectedDebugAndroidTest
 
-install:           # install CI-built APK on a connected device
+install:
 	./scripts/install.sh
+
+clean:
+	cargo clean --manifest-path rust/Cargo.toml || true
+	./gradlew clean || true

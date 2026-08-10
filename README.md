@@ -62,5 +62,9 @@ after every run.
 ## Current status
 
 Core API frozen at 1.0.0; bindings committed for rev `7e79c9c`; Gradle scaffold
-+ CI (native lib, APK, unit tests, cache pruning) in place. This repo is in
-**Phase A** of `PLAN.md`: native pipeline wired, capture/encode not yet landed.
++ CI (native lib, APK, unit tests, cache pruning) in place. **Phase B** of
+`PLAN.md` is implemented: Compose app shell, permissions, settings, foreground
+service, and the session controller with honest UI states (idle → connecting →
+live / reconnecting / exhausted → stopped). JVM unit tests gate CI; the
+instrumented `SessionLifecycleTest` (`make android-test`) exercises the real
+`.so` on a device. Capture/encode lands in Phase C.

@@ -4,9 +4,10 @@ Roadmap for the Android publisher app that embeds the `strym-core` via its
 frozen UniFFI facade. This is a **separate repo** from the core; the core is
 consumed read-only as a pinned git dependency (`android/rust/Cargo.toml`).
 
-State: **Phase A complete**. Core API 1.0 frozen; native build pipeline wired,
-Gradle scaffold in place, CI builds installable APKs, and the smoke app runs the
-full session lifecycle on a connected phone.
+State: **Phase B implemented** (code complete, awaiting CI + device verification).
+App shell, permissions, settings, foreground service, session controller, and
+Compose Live/Settings screens are in; the smoke lifecycle moved into an
+instrumented test suite (`make android-test`).
 
 ---
 
@@ -86,15 +87,18 @@ android/
 ├── app/
 │   ├── build.gradle.kts
 │   ├── src/main/AndroidManifest.xml
-│   ├── src/main/java/com/strym/app/     # app code (MainActivity, Phase A smoke)
+│   ├── src/main/java/com/strym/app/     # app code: session/settings/service/ui
 │   ├── src/main/java/uniffi/            # COMMITTED Kotlin bindings (regenerate on core bump)
+│   ├── src/test/                        # JVM unit tests (controller, mapping, formatting)
+│   ├── src/androidTest/                 # instrumented lifecycle test (make android-test)
 │   ├── src/main/jniLibs/<abi>/          # built by CI, git-ignored
 │   └── proguard-rules.pro
 └── gradlew / gradlew.bat
 ```
 
-Toolchain: Gradle 8.10.2, AGP 8.7.3, Kotlin 2.0, JNA (UniFFI runtime),
-minSdk 26, targetSdk 35, NDK 27, `cargo-ndk`, pinned core rev `7e79c9c`.
+Toolchain: Gradle 8.10.2, AGP 8.7.3, Kotlin 2.0, Compose (BOM 2024.12),
+CameraX 1.4, JNA (UniFFI runtime), minSdk 26, targetSdk 35, NDK 27,
+`cargo-ndk`, pinned core rev `7e79c9c`.
 
 ---
 
@@ -136,31 +140,49 @@ device; the smoke app reports the session state machine without crashing.
 
 ---
 
-## Phase B — App shell & session UX
+## Phase B — App shell & session UX ✅ (code complete)
 
 Goal: a runnable app that manages the session and renders its state honestly.
 
-Tasks:
+Done:
 
-1. **Foreground service.** `StreamService` (type `camera|microphone`, POST_NOTIFICATIONS
-   on 33+) keeps the session alive with screen off; UI binds to it.
-2. **Permissions flow.** CAMERA, RECORD_AUDIO, INTERNET; Compose UI with
-   rationale states (shouldShowRequestPermissionRationale, permanently denied).
-3. **Settings screen.** URL/app/stream-key, video presets (720p30 / 1080p30),
-   bitrate, latency mode (`LatencyMode`), audio-on toggle. Persisted via
-   `DataStore`. Stream key rendered masked.
-4. **Live screen.** Camera preview (the codec input surface), state badge
-   (Idle/Connecting/Live/Reconnecting/Exhausted/Stopped), live stats row
+1. **Foreground service.** `service/StreamService.kt` (type `camera|microphone`)
+   owns the session; UI binds to it; notification reflects the current phase.
+   POST_NOTIFICATIONS is asked opportunistically at go-live (never blocks the
+   stream).
+2. **Permissions flow.** `ui/permissions/PermissionGate.kt` gates CAMERA +
+   RECORD_AUDIO with rationale states (re-check on resume, permanently denied
+   → deep-link into system settings). No network/location asks.
+3. **Settings screen.** `settings/SettingsRepository.kt` persists via DataStore
+   (URL/app/masked stream key, 720p30 / 1080p30 presets, bitrate slider,
+   `LatencyMode` segmented control, audio toggle).
+4. **Live screen.** `ui/live/LiveScreen.kt`: CameraX preview (plain preview for
+   now — Phase C swaps in the codec input surface), state badge, 1 Hz stats row
    (`bitrate_out_bps`, `drop_ratio`, `buffer_lag_ms`, `rtt_ms`, uptime),
-   Start/Stop/Retry buttons honoring session state.
-5. **StreamController.** Maps `on_state_changed`/`on_stats` onto a single
-   `StateFlow<UiState>`; owns the reference clock; converts FFI exceptions
-   (`InvalidConfig`, `InvalidState`, `Engine`) into user-readable messages.
-6. **Error surfacing.** `last_error()` shown with a Retry path; `Exhausted`
-   state maps to explicit "Give up" / "Try again".
+   Start/Stop/Retry controls honoring session state.
+5. **StreamController.** `session/StreamController.kt` maps
+   `on_state_changed`/`on_stats` onto one `StateFlow<UiState>`; owns the
+   reference clock (`elapsedRealtimeNanos` origin, `nowMs()` for Phase C/D
+   PTS); converts `InvalidConfig`/`InvalidState`/`Engine` into user strings.
+   Sits behind a `SessionGateway` seam (`RealSessionFactory` in production)
+   so the state machine is JVM-unit-testable without the `.so`.
+6. **Error surfacing.** Core error text shown verbatim with Retry; finite
+   reconnect budget (8 attempts) makes `Exhausted` reachable → explicit
+   "Try again" / "Give up"; failed initial connect shows the error +
+   retry/give-up without a live badge.
+7. **Tests.** JVM: controller state machine (10 cases), config mapping,
+   stat formatting. Instrumented: `SessionLifecycleTest` — the deferred Phase A
+   lifecycle test plus eager invalid-config rejection, run via `make
+   android-test` on a device. CI runs the JVM suite with the APK build.
 
-Exit criteria: end-to-end state machine visible in UI against a dead endpoint
-(connect fails → Idle + error → retry); stats tick every second while trying.
+Exit criteria:
+
+- [x] Unit tests green in CI; APK builds (verified by CI).
+- [ ] End-to-end state machine visible in UI against a dead endpoint
+      (connect fails → Idle + error → retry) — device validation.
+- [ ] Stats tick every second while trying — device validation
+      (the instrumented lifecycle test asserts stats ticks against a dead
+      endpoint).
 
 ---
 

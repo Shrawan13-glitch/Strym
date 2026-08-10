@@ -1,4 +1,56 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Strym</string>
+
+    <!-- Permissions -->
+    <string name="permissions_title">Camera and microphone access</string>
+    <string name="permissions_rationale">Strym streams your camera and microphone live. Grant both permissions to go live.</string>
+    <string name="permissions_denied_permanently">Camera and microphone access is denied. Enable it in system settings to go live.</string>
+    <string name="permissions_grant">Grant permissions</string>
+    <string name="permissions_open_settings">Open app settings</string>
+
+    <!-- Live screen -->
+    <string name="live_go_live">Go live</string>
+    <string name="live_stop">Stop</string>
+    <string name="live_retry">Retry</string>
+    <string name="live_try_again">Try again</string>
+    <string name="live_give_up">Give up</string>
+    <string name="live_settings">Settings</string>
+    <string name="live_configure_hint">Set your RTMP server and stream key in Settings first.</string>
+
+    <!-- Session states -->
+    <string name="state_idle">Idle</string>
+    <string name="state_connecting">Connecting…</string>
+    <string name="state_live">Live</string>
+    <string name="state_reconnecting">Reconnecting…</string>
+    <string name="state_exhausted">Reconnect budget exhausted</string>
+    <string name="state_stopped">Stopped</string>
+
+    <!-- Stats row -->
+    <string name="stats_bitrate">Out</string>
+    <string name="stats_drop">Drops</string>
+    <string name="stats_lag">Lag</string>
+    <string name="stats_rtt">RTT</string>
+    <string name="stats_uptime">Uptime</string>
+    <string name="stats_unknown">–</string>
+
+    <!-- Settings screen -->
+    <string name="settings_title">Stream settings</string>
+    <string name="settings_server_url">Server URL</string>
+    <string name="settings_app">App</string>
+    <string name="settings_stream_key">Stream key</string>
+    <string name="settings_show_key">Show</string>
+    <string name="settings_hide_key">Hide</string>
+    <string name="settings_video_preset">Video preset</string>
+    <string name="settings_video_bitrate">Video bitrate</string>
+    <string name="settings_latency">Latency mode</string>
+    <string name="settings_audio">Stream audio</string>
+    <string name="settings_applies_next">Changes apply to the next stream.</string>
+    <string name="settings_latency_aggressive">Low latency</string>
+    <string name="settings_latency_balanced">Balanced</string>
+    <string name="settings_latency_lenient">Lenient</string>
+
+    <!-- Notification -->
+    <string name="notification_channel_streaming">Live streaming</string>
+    <string name="notification_streaming_title">Strym</string>
 </resources>

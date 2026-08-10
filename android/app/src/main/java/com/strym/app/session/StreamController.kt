@@ -1,0 +1,165 @@
+package com.strym.app.session
+
+import android.os.SystemClock
+import com.strym.app.settings.BroadcastSettings
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import uniffi.stream_ffi.RtmpDestination
+import uniffi.stream_ffi.SessionConfig
+import uniffi.stream_ffi.SessionState
+import uniffi.stream_ffi.SessionStats
+import uniffi.stream_ffi.StreamException
+import uniffi.stream_ffi.StreamInfo
+import uniffi.stream_ffi.StreamListener
+
+private const val RECONNECT_MAX_ATTEMPTS = 8
+private const val RECONNECT_INITIAL_DELAY_MS = 500L
+private const val RECONNECT_MAX_DELAY_MS = 15_000L
+private const val STALL_TIMEOUT_MS = 10_000L
+private const val PUMP_INTERVAL_MS = 16L
+private const val STATS_INTERVAL_MS = 1_000L
+
+/**
+ * Map the user's broadcast settings onto the frozen core config. Mirrors the
+ * core's `default_session_config` with a finite reconnect budget, so
+ * [StreamPhase.EXHAUSTED] is reachable and the UI owns the "try again" /
+ * "give up" decision.
+ */
+fun buildSessionConfig(settings: BroadcastSettings): SessionConfig {
+    val destination = RtmpDestination(
+        url = settings.serverUrl.trim(),
+        app = settings.app.trim(),
+        streamKey = settings.streamKey.trim(),
+        timeoutMs = 0uL,
+    )
+    val stream = StreamInfo(
+        width = settings.preset.width.toUInt(),
+        height = settings.preset.height.toUInt(),
+        framerate = settings.preset.framerate,
+        videoBitrateBps = settings.videoBitrateBps.toUInt(),
+        audioBitrateBps = BroadcastSettings.AUDIO_BITRATE_BPS.toUInt(),
+        audioSampleRateHz = BroadcastSettings.AUDIO_SAMPLE_RATE_HZ.toUInt(),
+    )
+    return SessionConfig(
+        destination = destination,
+        stream = stream,
+        latency = settings.latencyMode,
+        reconnectMaxAttempts = RECONNECT_MAX_ATTEMPTS.toUInt(),
+        reconnectInitialDelayMs = RECONNECT_INITIAL_DELAY_MS.toULong(),
+        reconnectMaxDelayMs = RECONNECT_MAX_DELAY_MS.toULong(),
+        stallTimeoutMs = STALL_TIMEOUT_MS.toULong(),
+        pumpIntervalMs = PUMP_INTERVAL_MS.toULong(),
+        statsIntervalMs = STATS_INTERVAL_MS.toULong(),
+    )
+}
+
+/**
+ * The single coordinator between the UI and one core session.
+ *
+ * Owns the reference clock ([nowMs], the timestamp base Phase C/D will feed
+ * to `push_video`/`push_audio`), maps the core's worker-thread callbacks onto
+ * one thread-safe [StateFlow], serializes lifecycle actions, and converts FFI
+ * exceptions into user-readable messages.
+ */
+class StreamController(
+    private val sessionFactory: SessionFactory,
+    private val clockNanos: () -> Long = { SystemClock.elapsedRealtimeNanos() },
+) {
+
+    private val controlMutex = Mutex()
+
+    @Volatile
+    private var gateway: SessionGateway? = null
+
+    @Volatile
+    private var originNanos: Long? = null
+
+    private val _uiState = MutableStateFlow(UiState())
+    val uiState: StateFlow<UiState> = _uiState
+
+    /** Milliseconds since the current session's clock origin.
+     * 0 before the first [goLive]. */
+    fun nowMs(): Long {
+        val origin = originNanos ?: return 0L
+        return (clockNanos() - origin) / 1_000_000L
+    }
+
+    private val listener = object : StreamListener {
+        override fun onStateChanged(state: SessionState, detail: String?) {
+            if (gateway == null) return
+            val phase = state.toPhase()
+            _uiState.update { current ->
+                current.copy(
+                    phase = phase,
+                    errorMessage = when {
+                        phase == StreamPhase.LIVE -> null
+                        detail != null -> detail
+                        else -> current.errorMessage
+                    },
+                )
+            }
+        }
+
+        override fun onStats(stats: SessionStats) {
+            if (gateway == null) return
+            _uiState.update { it.copy(stats = stats.toSnapshot()) }
+        }
+    }
+
+    /**
+     * Create a session from [settings] and start it. Returns false (with the
+     * reason in [uiState]) when the config or the start is rejected.
+     */
+    suspend fun goLive(settings: BroadcastSettings): Boolean = controlMutex.withLock {
+        if (gateway != null) return@withLock false
+        val config = buildSessionConfig(settings)
+        _uiState.value = UiState(phase = StreamPhase.CONNECTING, hasSession = true)
+        val created = try {
+            sessionFactory.create(config, listener)
+        } catch (e: StreamException) {
+            _uiState.value = UiState(errorMessage = e.toUserMessage())
+            return@withLock false
+        }
+        gateway = created
+        originNanos = clockNanos()
+        try {
+            created.start()
+        } catch (e: StreamException) {
+            gateway = null
+            withContext(Dispatchers.IO) { created.close() }
+            _uiState.value = UiState(errorMessage = e.toUserMessage())
+            return@withLock false
+        }
+        true
+    }
+
+    /**
+     * Re-arm after [StreamPhase.EXHAUSTED], or relaunch a session whose
+     * initial connect failed. No-op when no session exists.
+     */
+    suspend fun retry() = controlMutex.withLock {
+        val current = gateway ?: return@withLock
+        _uiState.update { it.copy(phase = StreamPhase.CONNECTING, errorMessage = null) }
+        try {
+            current.retry()
+        } catch (e: StreamException) {
+            _uiState.update {
+                it.copy(phase = current.state().toPhase(), errorMessage = e.toUserMessage())
+            }
+        }
+    }
+
+    /** Stop the session (blocking join happens off the calling thread) and reset to idle. */
+    suspend fun stopSession() = controlMutex.withLock {
+        val current = gateway ?: return@withLock
+        gateway = null
+        originNanos = null
+        withContext(Dispatchers.IO) { current.close() }
+        _uiState.value = UiState()
+    }
+}
