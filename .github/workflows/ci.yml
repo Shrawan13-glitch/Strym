@@ -112,13 +112,15 @@ jobs:
     steps:
       # Runs as its own job so every job's cache-save step has completed first
       # (Gradle/Rust cache post-steps would otherwise repopulate right after).
-      - name: Delete all but the freshest cache entries
+      # Count-based prune: keep the newest 12 entries (covers the last ~2 runs
+      # worth of Gradle + Rust caches) and drop the rest, so the repo never
+      # accumulates stale caches while the fresh ones always hit.
+      - name: Keep the 12 newest cache entries, delete the rest
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          KEEP=6
           gh api repos/${{ github.repository }}/actions/caches --paginate \
-            -q '.actions_caches | sort_by(.created_at) | reverse | .['"$KEEP"':][] | .id' \
+            -q '.actions_caches | sort_by(.created_at) | reverse | .[12:][] | .id' \
             | while read -r id; do
                 echo "deleting stale cache $id"
                 gh api -X DELETE "repos/${{ github.repository }}/actions/caches/$id" > /dev/null
