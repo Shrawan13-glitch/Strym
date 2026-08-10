@@ -1,17 +1,17 @@
-# Stream Platform — Android / iOS apps for the `stream` core
+# Stream Platform — Android app for the `stream` core
 
-Platform-facing apps that embed the [Rust streaming core]. This is a **separate
-repository from the core** by design:
+Android publisher app that embeds the [Rust streaming core]. This is a
+**separate repository from the core** by design:
 
 | Repo | Contains | Contract |
 | --- | --- | --- |
 | `stream` (core) | Dependency-free Rust core + `stream-ffi` (UniFFI facade) | Frozen API 1.0; bindings generated, never committed |
-| `stream-platform` (this) | Android app, iOS app, capture/encode glue | Consumes the core's Kotlin/Swift bindings + shared library |
+| `stream-platform` (this) | Android app, capture/encode glue | Consumes the core's Kotlin bindings + shared library |
 
 ## How the two repos fit together
 
 ```text
-core/stream-ffi ──generate-bindings.sh──▶ Kotlin (.kt) + Swift (.swift)
+core/stream-ffi ──generate-bindings.sh──▶ Kotlin (.kt)
         │  cargo build --target aarch64-linux-android
         └──▶ libstream_ffi.so  ──▶ bundled into the APK via jniLibs
 core/src ── (ingest server, for loopback testing) ──▶ host test harness
@@ -23,7 +23,6 @@ commit and builds the shared library itself (see `docs/core-integration.md`).
 ## Repo layout
 
 - `android/` — Android publisher app (Gradle + Kotlin, CameraX + MediaCodec)
-- `ios/` — iOS publisher app (deferred; roadmap stub)
 - `docs/` — how to build/link the core, capture design notes
 - `PLAN.md` — step-by-step roadmap for the Android app (the living spec)
 

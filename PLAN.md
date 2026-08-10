@@ -1,8 +1,8 @@
 # `stream-platform` PLAN — Android live-streaming app
 
 Roadmap for the Android publisher app that embeds the [core] via its frozen
-UniFFI facade. iOS is a later phase. This is a **separate repo** from the core;
-the core is consumed read-only as a pinned git dependency.
+UniFFI facade. This is a **separate repo** from the core; the core is consumed
+read-only as a pinned git dependency.
 
 State: **Phase A in progress**. Core API 1.0 frozen; native build pipeline
 being wired.
@@ -238,15 +238,6 @@ Tasks:
 
 Exit criteria: release APK passes the Phase E soak; crash-free 95%+ across a
 device matrix (ARM64 mid/low end, Android 8–15).
-
----
-
-## Phase Z — iOS (deferred)
-
-Same core, `--language swift`, XCFramework via `cargo-lipo`; AVFoundation
-(AVCaptureSession + VTCompressionSession + AudioUnit) instead of CameraX/MediaCodec;
-A/V sync and reconnect UX mirror the Android controller. Kick off only after
-Phase F ships.
 
 ---
 

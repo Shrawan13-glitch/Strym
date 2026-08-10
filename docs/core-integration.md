@@ -1,4 +1,4 @@
-# Building the core for Android (and iOS)
+# Building the core for Android
 
 The core repo is consumed **read-only** from this repo. It is pinned as a git
 dependency (or vendored submodule) and never edited here.
@@ -50,8 +50,3 @@ loads it with `System.loadLibrary("stream_ffi")`.
 
 > Keep the arch list minimal in debug (arm64-v8a only) to cut build time;
 > expand for release.
-
-## iOS notes (deferred)
-
-Same bindgen flow, `--language swift`, plus `cargo-lipo`/XCFramework assembly.
-Tracked in `PLAN.md` Phase Z.
