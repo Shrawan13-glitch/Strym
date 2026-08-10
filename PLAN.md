@@ -4,10 +4,8 @@ Roadmap for the Android publisher app that embeds the `strym-core` via its
 frozen UniFFI facade. This is a **separate repo** from the core; the core is
 consumed read-only as a pinned git dependency (`android/rust/Cargo.toml`).
 
-State: **Phase B implemented** (code complete, awaiting CI + device verification).
-App shell, permissions, settings, foreground service, session controller, and
-Compose Live/Settings screens are in; the smoke lifecycle moved into an
-instrumented test suite (`make android-test`).
+State: **Phase B complete** (verified on device: session lifecycle, error
+surfacing, stats tick, live badge; see Phase B exit criteria below).
 
 ---
 
@@ -140,7 +138,7 @@ device; the smoke app reports the session state machine without crashing.
 
 ---
 
-## Phase B — App shell & session UX ✅ (code complete)
+## Phase B — App shell & session UX ✅ (done)
 
 Goal: a runnable app that manages the session and renders its state honestly.
 
@@ -178,11 +176,14 @@ Done:
 Exit criteria:
 
 - [x] Unit tests green in CI; APK builds (verified by CI).
-- [ ] End-to-end state machine visible in UI against a dead endpoint
+- [x] End-to-end state machine visible in UI against a dead endpoint
       (connect fails → Idle + error → retry) — device validation.
-- [ ] Stats tick every second while trying — device validation
+- [x] Stats tick every second while trying — device validation
       (the instrumented lifecycle test asserts stats ticks against a dead
       endpoint).
+- [x] Invalid config is rejected with a user-readable error before any
+      connect attempt (device validation).
+- [x] Session reaches the live badge on a valid endpoint (device validation).
 
 ---
 
