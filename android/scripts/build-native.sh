@@ -22,7 +22,7 @@ else
 fi
 
 echo ">> cargo-ndk build ($MODE)"
-cargo ndk "${NDK_TARGETS[@]}" -o "$OUT" build -p stream_ffi "${CARGO_FLAGS[@]}"
+cargo ndk "${NDK_TARGETS[@]}" -o "$OUT" build -p stream_android_bridge "${CARGO_FLAGS[@]}"
 
 echo ">> artifacts:"
 find "$OUT" -name 'libstream_ffi.so' -exec ls -lh {} +
