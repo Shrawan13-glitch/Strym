@@ -9,7 +9,9 @@ import android.os.Binder
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import androidx.lifecycle.LifecycleService
 import com.strym.app.R
+import com.strym.app.capture.CameraStreamer
 import com.strym.app.session.RealSessionFactory
 import com.strym.app.session.StreamController
 import com.strym.app.session.StreamPhase
@@ -21,20 +23,25 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 
 /**
- * Keeps the stream session alive with the screen off. Owns the
- * [StreamController] (one session per service lifetime); the UI binds to
- * read its `uiState` and to trigger go-live / stop.
+ * Keeps the broadcast alive with the screen off. Owns the [StreamController]
+ * (one session per service lifetime) and the [CameraStreamer] (camera →
+ * encoder → session); the UI binds to read `uiState`, hand over its preview
+ * surface, and trigger go-live / stop.
  *
- * Started as a `camera|microphone` foreground service when a broadcast
- * begins — the runtime enforces that the matching permissions are granted,
- * which the UI's permission gate guarantees before [goLive] is reachable.
+ * A [LifecycleService] so CameraX can bind its use cases to this service's
+ * lifecycle instead of the activity's — capture then keeps running when the
+ * screen turns off (the foreground type enforces the camera permission, which
+ * the UI's permission gate guarantees before [goLive] is reachable).
  */
-class StreamService : Service() {
+class StreamService : LifecycleService() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val binder = LocalBinder()
 
     lateinit var controller: StreamController
+        private set
+
+    lateinit var camera: CameraStreamer
         private set
 
     inner class LocalBinder : Binder() {
@@ -44,22 +51,37 @@ class StreamService : Service() {
     override fun onCreate() {
         super.onCreate()
         controller = StreamController(RealSessionFactory)
+        camera = CameraStreamer(this, this)
         scope.launch {
             controller.uiState.collect { state ->
                 if (state.hasSession) {
                     getSystemService(NotificationManager::class.java)
                         .notify(NOTIFICATION_ID, buildNotification(state.phase))
                 }
+                if (state.phase == StreamPhase.RECONNECTING) {
+                    // Keyframe discipline: cut to a fresh IDR so the viewer
+                    // resyncs promptly once the connection returns.
+                    camera.requestKeyframe()
+                }
             }
         }
     }
 
-    override fun onBind(intent: Intent): IBinder = binder
+    override fun onBind(intent: Intent): IBinder {
+        super.onBind(intent)
+        return binder
+    }
 
-    /** Create + start the session, then promote this service to the foreground. */
+    /** Create + start the session and capture, then promote to the foreground. */
     fun goLive(settings: BroadcastSettings) {
+        // Enter the STARTED state: CameraX only runs the camera for lifecycles
+        // at least STARTED, and the foreground promotion below builds on it.
+        startService(Intent(this, StreamService::class.java))
         scope.launch {
-            if (!controller.goLive(settings)) return@launch
+            if (!controller.goLive(settings)) {
+                stopSelf()
+                return@launch
+            }
             val types = if (settings.audioEnabled) {
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
@@ -72,21 +94,33 @@ class StreamService : Service() {
                 buildNotification(StreamPhase.CONNECTING),
                 types,
             )
+            camera.startEncoding(settings, controller, ::captureFailed)
         }
     }
 
-    /** Stop the session, leave the foreground, and tear the service down. */
+    /** Stop the session, leave the foreground, and release the start. */
     fun endBroadcast() {
-        scope.launch {
-            controller.stopSession()
-            ServiceCompat.stopForeground(this@StreamService, ServiceCompat.STOP_FOREGROUND_REMOVE)
-            stopSelf()
-        }
+        scope.launch { teardown() }
     }
 
     override fun onDestroy() {
         scope.cancel()
         super.onDestroy()
+    }
+
+    private suspend fun teardown() {
+        camera.stopEncoding()
+        controller.stopSession()
+        ServiceCompat.stopForeground(this@StreamService, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
+
+    /** Fatal capture failure: stop everything and show why. */
+    private fun captureFailed(message: String) {
+        scope.launch {
+            teardown()
+            controller.reportCaptureError(message)
+        }
     }
 
     private fun buildNotification(phase: StreamPhase): Notification =

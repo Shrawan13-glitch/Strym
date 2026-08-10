@@ -1,6 +1,8 @@
 package com.strym.app.session
 
 import android.os.SystemClock
+import android.util.Log
+import com.strym.app.capture.CameraStreamer
 import com.strym.app.settings.BroadcastSettings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -23,6 +25,8 @@ private const val RECONNECT_MAX_DELAY_MS = 15_000L
 private const val STALL_TIMEOUT_MS = 10_000L
 private const val PUMP_INTERVAL_MS = 16L
 private const val STATS_INTERVAL_MS = 1_000L
+
+private const val TAG = "StreamController"
 
 /**
  * Map the user's broadcast settings onto the frozen core config. Mirrors the
@@ -69,7 +73,7 @@ fun buildSessionConfig(settings: BroadcastSettings): SessionConfig {
 class StreamController(
     private val sessionFactory: SessionFactory,
     private val clockNanos: () -> Long = { SystemClock.elapsedRealtimeNanos() },
-) {
+) : CameraStreamer.MediaIngest {
 
     private val controlMutex = Mutex()
 
@@ -161,5 +165,28 @@ class StreamController(
         originNanos = null
         withContext(Dispatchers.IO) { current.close() }
         _uiState.value = UiState()
+    }
+
+    /**
+     * Media-ingest entry points fed by the capture pipeline ([CameraStreamer])
+     * from the encoder thread. Both are no-ops without a live session and
+     * never block — the core copies into its bounded buffer and returns.
+     */
+    override fun configureCodecs(avcDecoderConfig: ByteArray?, audioSpecificConfig: ByteArray?) {
+        val current = gateway ?: return
+        try {
+            current.configureCodecs(avcDecoderConfig, audioSpecificConfig)
+        } catch (e: StreamException) {
+            Log.w(TAG, "codec config rejected: ${e.toUserMessage()}")
+        }
+    }
+
+    override fun pushVideo(ptsMs: Long, isKeyframe: Boolean, annexB: ByteArray) {
+        gateway?.pushVideo(ptsMs, isKeyframe, annexB)
+    }
+
+    /** Surface a capture-pipeline failure as a user-readable message. */
+    fun reportCaptureError(message: String) {
+        _uiState.update { it.copy(errorMessage = message) }
     }
 }

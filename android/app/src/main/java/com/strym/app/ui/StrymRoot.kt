@@ -79,7 +79,12 @@ private fun streamingState(service: StreamService?): UiState {
     return state
 }
 
-/** Bind to [StreamService] for the lifetime of the composition. */
+/**
+ * Bind to [StreamService] for the lifetime of the composition. Also starts it:
+ * the camera only runs for lifecycles at least STARTED, and broadcasting
+ * needs the service to survive the UI. On dispose the start is released
+ * unless a broadcast is in flight.
+ */
 @Composable
 fun rememberStreamService(): StreamService? {
     val context = LocalContext.current
@@ -94,12 +99,14 @@ fun rememberStreamService(): StreamService? {
                 state.value = null
             }
         }
-        context.bindService(
-            Intent(context, StreamService::class.java),
-            connection,
-            Context.BIND_AUTO_CREATE,
-        )
+        val intent = Intent(context, StreamService::class.java)
+        context.startService(intent)
+        context.bindService(intent, connection, Context.BIND_AUTO_CREATE)
         onDispose {
+            val streaming = state.value?.controller?.uiState?.value?.hasSession == true
+            if (!streaming) {
+                context.stopService(intent)
+            }
             context.unbindService(connection)
         }
     }

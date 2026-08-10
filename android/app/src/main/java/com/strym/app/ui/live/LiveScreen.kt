@@ -3,12 +3,8 @@ package com.strym.app.ui.live
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
-import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.camera.core.CameraSelector
-import androidx.camera.core.Preview
-import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -45,7 +41,6 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.strym.app.R
 import com.strym.app.service.StreamService
@@ -55,8 +50,6 @@ import com.strym.app.session.UiState
 import com.strym.app.settings.BroadcastSettings
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
-
-private const val TAG = "StrymLive"
 
 @Composable
 fun LiveScreen(
@@ -77,7 +70,7 @@ fun LiveScreen(
     ) { /* granted or not — the stream works either way */ }
 
     Box(Modifier.fillMaxSize()) {
-        CameraPreview(Modifier.fillMaxSize())
+        CameraPreview(service, Modifier.fillMaxSize())
 
         Row(
             modifier = Modifier
@@ -241,34 +234,24 @@ private fun StatCell(label: String, value: String) {
 }
 
 /**
- * CameraX preview bound to the lifecycle. In Phase B this is a plain
- * preview; Phase C replaces the target surface with the H.264 encoder's
- * input surface (zero-copy).
+ * Live preview. The [PreviewView] hands its surface provider to the service's
+ * camera streamer, which owns the CameraX lifecycle. Idle → the camera draws
+ * straight to this view; live → the camera is rebound to the encoder's input
+ * surface (zero-copy) and this view shows the last frame until the stream
+ * stops. This keeps the screen a live viewfinder without the UI owning the
+ * camera session, so capture survives the screen turning off.
  */
 @Composable
-fun CameraPreview(modifier: Modifier = Modifier) {
+fun CameraPreview(service: StreamService?, modifier: Modifier = Modifier) {
     val context = LocalContext.current
-    val lifecycleOwner = LocalLifecycleOwner.current
     val previewView = remember(context) {
         PreviewView(context).apply { scaleType = PreviewView.ScaleType.FILL_CENTER }
     }
 
-    DisposableEffect(lifecycleOwner) {
-        val providerFuture = ProcessCameraProvider.getInstance(context)
-        val bindCamera = Runnable {
-            runCatching {
-                val provider = providerFuture.get()
-                val preview = Preview.Builder().build()
-                preview.setSurfaceProvider(previewView.surfaceProvider)
-                provider.unbindAll()
-                provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview)
-            }.onFailure { Log.e(TAG, "camera bind failed", it) }
-        }
-        providerFuture.addListener(bindCamera, ContextCompat.getMainExecutor(context))
+    DisposableEffect(service) {
+        service?.camera?.setPreviewSurface(previewView.surfaceProvider)
         onDispose {
-            runCatching {
-                if (providerFuture.isDone) providerFuture.get().unbindAll()
-            }
+            service?.camera?.setPreviewSurface(null)
         }
     }
 

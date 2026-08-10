@@ -25,6 +25,9 @@ private class FakeGateway : SessionGateway {
     var closed = false
     var startException: StreamException? = null
     var stateValue: SessionState = SessionState.IDLE
+    val codecConfigs = mutableListOf<Pair<ByteArray?, ByteArray?>>()
+    var configureException: StreamException? = null
+    val pushedFrames = mutableListOf<Triple<Long, Boolean, Int>>()
 
     override fun start() {
         startCalls++
@@ -38,6 +41,15 @@ private class FakeGateway : SessionGateway {
     override fun state(): SessionState = stateValue
 
     override fun lastError(): String? = null
+
+    override fun configureCodecs(avcDecoderConfig: ByteArray?, audioSpecificConfig: ByteArray?) {
+        configureException?.let { throw it }
+        codecConfigs.add(avcDecoderConfig to audioSpecificConfig)
+    }
+
+    override fun pushVideo(ptsMs: Long, isKeyframe: Boolean, annexB: ByteArray) {
+        pushedFrames.add(Triple(ptsMs, isKeyframe, annexB.size))
+    }
 
     override fun close() {
         closed = true
@@ -253,5 +265,64 @@ class StreamControllerTest {
         val controller = controller(FakeSessionFactory())
         controller.retry()
         assertEquals(UiState(), controller.uiState.value)
+    }
+
+    @Test
+    fun pushVideoForwardsFramesToTheActiveSession() = runTest {
+        val factory = FakeSessionFactory()
+        val controller = controller(factory)
+        assertTrue(controller.goLive(TEST_SETTINGS))
+        val gateway = factory.created.single()
+
+        controller.pushVideo(0, true, byteArrayOf(0, 0, 0, 1, 0x65))
+        controller.pushVideo(33, false, byteArrayOf(0, 0, 0, 1, 0x41))
+        assertEquals(listOf(Triple(0L, true, 5), Triple(33L, false, 5)), gateway.pushedFrames)
+    }
+
+    @Test
+    fun pushVideoWithoutSessionIsANoOp() = runTest {
+        val controller = controller(FakeSessionFactory())
+        controller.pushVideo(0, true, byteArrayOf(0, 0, 0, 1, 0x65))
+        assertEquals(UiState(), controller.uiState.value)
+    }
+
+    @Test
+    fun pushVideoStopsAfterStopSession() = runTest {
+        val factory = FakeSessionFactory()
+        val controller = controller(factory)
+        assertTrue(controller.goLive(TEST_SETTINGS))
+        val gateway = factory.created.single()
+
+        controller.stopSession()
+        controller.pushVideo(0, true, byteArrayOf(0, 0, 0, 1, 0x65))
+        assertTrue(gateway.pushedFrames.isEmpty())
+    }
+
+    @Test
+    fun configureCodecsPassesThroughAndSwallowsRejection() = runTest {
+        val factory = FakeSessionFactory()
+        val controller = controller(factory)
+        assertTrue(controller.goLive(TEST_SETTINGS))
+        val gateway = factory.created.single()
+
+        val avc = byteArrayOf(0x01, 0x64, 0x00, 0x1F)
+        controller.configureCodecs(avc, null)
+        assertEquals(1, gateway.codecConfigs.size)
+        assertEquals(avc.toList(), gateway.codecConfigs.single().first!!.toList())
+
+        // A rejection (e.g. wrong session state) must not escape to the
+        // encoder thread.
+        gateway.configureException = StreamException.InvalidState("not ready")
+        controller.configureCodecs(avc, null)
+        assertEquals(1, gateway.codecConfigs.size)
+    }
+
+    @Test
+    fun reportCaptureErrorSurfacesTheMessage() = runTest {
+        val controller = controller(FakeSessionFactory())
+        controller.reportCaptureError("No H.264 encoder available on this device")
+        val state = controller.uiState.value
+        assertEquals(StreamPhase.IDLE, state.phase)
+        assertEquals("No H.264 encoder available on this device", state.errorMessage)
     }
 }

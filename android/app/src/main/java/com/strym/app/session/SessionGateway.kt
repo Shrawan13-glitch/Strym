@@ -19,6 +19,10 @@ interface SessionGateway : AutoCloseable {
 
     fun lastError(): String?
 
+    fun configureCodecs(avcDecoderConfig: ByteArray?, audioSpecificConfig: ByteArray?)
+
+    fun pushVideo(ptsMs: Long, isKeyframe: Boolean, annexB: ByteArray)
+
     override fun close()
 }
 
@@ -34,6 +38,12 @@ private class RealSessionGateway(private val session: StreamSession) : SessionGa
     override fun state(): SessionState = session.state()
 
     override fun lastError(): String? = session.lastError()
+
+    override fun configureCodecs(avcDecoderConfig: ByteArray?, audioSpecificConfig: ByteArray?) =
+        session.configureCodecs(avcDecoderConfig, audioSpecificConfig)
+
+    override fun pushVideo(ptsMs: Long, isKeyframe: Boolean, annexB: ByteArray) =
+        session.pushVideo(ptsMs, isKeyframe, annexB)
 
     override fun close() {
         session.stop()
