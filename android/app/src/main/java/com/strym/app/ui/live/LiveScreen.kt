@@ -266,7 +266,6 @@ fun CameraPreview(modifier: Modifier = Modifier) {
         }
         providerFuture.addListener(bindCamera, ContextCompat.getMainExecutor(context))
         onDispose {
-            providerFuture.removeListener(bindCamera)
             runCatching {
                 if (providerFuture.isDone) providerFuture.get().unbindAll()
             }
