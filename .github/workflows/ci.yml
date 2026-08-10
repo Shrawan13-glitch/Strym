@@ -58,6 +58,9 @@ jobs:
     name: APK + unit tests
     needs: native
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write # prune stale caches
     steps:
       - uses: actions/checkout@v4
 
