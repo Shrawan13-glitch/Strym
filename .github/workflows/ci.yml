@@ -101,13 +101,22 @@ jobs:
           path: android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
 
-      # Keep the repo's cache from growing unbounded: delete every cache
-      # entry except the freshest few created by this run.
-      - name: Prune stale caches
+  prune:
+    name: Prune stale caches
+    needs: [apk]
+    runs-on: ubuntu-latest
+    if: always()
+    permissions:
+      contents: read
+      actions: write # delete stale cache entries
+    steps:
+      # Runs as its own job so every job's cache-save step has completed first
+      # (Gradle/Rust cache post-steps would otherwise repopulate right after).
+      - name: Delete all but the freshest cache entries
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          KEEP=4
+          KEEP=6
           gh api repos/${{ github.repository }}/actions/caches --paginate \
             -q '.actions_caches | sort_by(.created_at) | reverse | .['"$KEEP"':][] | .id' \
             | while read -r id; do
