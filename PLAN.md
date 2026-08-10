@@ -187,32 +187,40 @@ Exit criteria:
 
 ---
 
-## Phase C — Video pipeline
+## Phase C — Video pipeline (in progress)
 
 Goal: camera frames reach the network as H.264.
 
-Tasks:
+Done:
 
-1. **Encoder surface via CameraX.** Create `MediaCodec` (H.264, `COLOR_FormatSurface`,
-   `BITRATE_MODE_CBR`, `I_FRAME_INTERVAL=2`, `MAX_B_FRAMES=0`, High profile).
-   Query `CodecCapabilities` for the largest supported resolution ≤ preset and
-   match CameraX `Preview` resolution to it. Implement a `Preview.SurfaceProvider`
-   whose surface *is* `codec.createInputSurface()` → zero-copy.
-2. **Codec config.** On first `BUFFER_FLAG_CODEC_CONFIG`, take csd-0/csd-1
-   (SPS/PPS), build the `AVCDecoderConfigurationRecord` and call
-   `configure_codecs(Some(avcc), None)`.
-3. **NAL conversion.** `NalUnit.avccToAnnexB(buffer)`: walk length-prefixed NALs,
-   rewrite lengths to `00 00 00 01`, emit into a single reusable
-   `ByteBuffer`/`ByteArray`. Keyframe = NAL type 5 present (or
-   `BUFFER_FLAG_KEY_FRAME` — use the buffer flag, faster).
-4. **Push path.** On each output buffer (callback mode on a dedicated
-   `HandlerThread`), compute `pts_ms` from the output's `presentationTimeUs`
-   against the shared clock origin and call `push_video(pts_ms, is_keyframe,
-   annexB)`. Reuse/recycle the converted buffer; MediaCodec returns its own
-   buffers via `releaseOutputBuffer`.
-5. **Rotation.** Encoder configured with the natural (landscape) resolution;
-   CameraX handles orientation via `setSurfaceRotation`/transform matrix so the
-   encoded stream is upright.
+- [x] **Encoder surface via CameraX.** `VideoEncoder` creates `MediaCodec`
+      (H.264, `COLOR_FormatSurface`, CBR, 2 s IDR, High profile with graceful
+      fallback); `EncoderCapabilities` + `EncoderSizeSelector` clamp to the
+      largest supported resolution ≤ preset; `CameraStreamer` implements a
+      `Preview.SurfaceProvider` whose surface *is* `codec.createInputSurface()`
+      → zero-copy.
+- [x] **Codec config.** `AvcDecoderConfig.fromCsd` builds the
+      `AVCDecoderConfigurationRecord` (SPS/PPS from csd-0/csd-1, matching the
+      core's `build_avcc` byte for byte) → `configureCodecs(Some(avcc), None)`.
+- [x] **NAL conversion.** `NalUnit.avccToAnnexBInPlace` rewrites length
+      prefixes to `00 00 00 01` in place (no reallocation); keyframe from
+      `BUFFER_FLAG_KEY_FRAME`.
+- [x] **Push path.** Async `MediaCodec.Callback` on a dedicated `HandlerThread`;
+      `VideoPts` rebases output `presentationTimeUs` to stream-relative ms
+      (monotonic, frame-rate fallback when unstamped) → `push_video`.
+- [x] Wiring + resilience hooks: `CameraStreamer` ↔ `StreamController`
+      (`MediaIngest`) ↔ core `push_video`/`configure_codecs`, keyframe request
+      on `Reconnecting`. JVM tests for NalUnit, VideoPts, AvcDecoderConfig,
+      EncoderSizeSelector.
+
+Remaining:
+
+- [ ] **Rotation.** The zero-copy surface path cannot rotate pixels; encoded
+      output is sensor-native (landscape) unless software rotation (GL) is
+      added. Current state is the landscape stream; a portrait/upright stream
+      needs a decision (GL rotation vs. accepting landscape).
+- [ ] **Exit criteria (device).** Host-side RTMP ingest (`scripts/ingest-server.sh`)
+      + `ffprobe`: `h264`, IDR cadence ≈2 s, correct resolution, monotonic PTS.
 
 Exit criteria: host-side RTMP ingest server receives a stream; `ffprobe`
 shows `h264` with IDR cadence ≈2 s and correct resolution; A/V PTS monotonic.
