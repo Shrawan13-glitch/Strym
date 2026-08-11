@@ -114,14 +114,24 @@ jobs:
       # (Gradle/Rust cache post-steps would otherwise repopulate right after).
       # Count-based prune: keep the newest 12 entries (covers the last ~2 runs
       # worth of Gradle + Rust caches) and drop the rest, so the repo never
-      # accumulates stale caches while the fresh ones always hit.
-      - name: Keep the 12 newest cache entries, delete the rest
+      # accumulates stale caches while the fresh ones always hit. The newest
+      # Rust cache is never deleted, even when it lands outside the kept
+      # window — there is always at least one Rust cache to hit.
+      - name: Keep the 12 newest cache entries (always incl. the newest Rust one)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh api repos/${{ github.repository }}/actions/caches --paginate \
-            -q '.actions_caches | sort_by(.created_at) | reverse | .[12:][] | .id' \
-            | while read -r id; do
-                echo "deleting stale cache $id"
-                gh api -X DELETE "repos/${{ github.repository }}/actions/caches/$id" > /dev/null
-              done
+          set -euo pipefail
+          REPO="${{ github.repository }}"
+          caches=$(gh api "repos/$REPO/actions/caches?per_page=100" \
+            -q '.actions_caches | sort_by(.created_at) | reverse | map({id, key})')
+          newest_rust_id=$(echo "$caches" \
+            | jq -r '[.[] | select(.key | test("rust"; "i"))][0].id // empty')
+          for id in $(echo "$caches" | jq -r '.[12:][].id'); do
+            if [ "$id" = "$newest_rust_id" ]; then
+              echo "keeping newest rust cache $id"
+              continue
+            fi
+            echo "deleting stale cache $id"
+            gh api -X DELETE "repos/$REPO/actions/caches/$id" > /dev/null
+          done
