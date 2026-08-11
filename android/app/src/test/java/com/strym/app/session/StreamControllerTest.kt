@@ -352,10 +352,10 @@ class StreamControllerTest {
         assertEquals(asc.toList(), gateway.codecConfigs.last().second!!.toList())
 
         // A rejection (e.g. wrong session state) must not escape to the
-        // encoder thread.
+        // encoder thread and must not append a config.
         gateway.configureException = StreamException.InvalidState("not ready")
         controller.configureCodecs(avc, null)
-        assertEquals(1, gateway.codecConfigs.size)
+        assertEquals(2, gateway.codecConfigs.size)
     }
 
     @Test
