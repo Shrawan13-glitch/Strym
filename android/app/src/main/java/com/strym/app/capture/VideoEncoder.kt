@@ -15,6 +15,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 private const val TAG = "StrymVideoEncoder"
 private const val MIME_AVC = "video/avc"
 private const val I_FRAME_INTERVAL_S = 2
+private const val KEY_CSD_0 = "csd-0"
+private const val KEY_CSD_1 = "csd-1"
 
 class VideoEncoderException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
@@ -202,8 +204,8 @@ class VideoEncoder(private val listener: Listener) {
     private fun emitCodecConfig(format: MediaFormat) {
         if (codecConfigSent.get()) return
         val config = AvcDecoderConfig.fromCsd(
-            format.getByteBuffer(MediaFormat.KEY_CSD_0),
-            format.getByteBuffer(MediaFormat.KEY_CSD_1),
+            format.getByteBuffer(KEY_CSD_0),
+            format.getByteBuffer(KEY_CSD_1),
         ) ?: return
         if (codecConfigSent.compareAndSet(false, true)) {
             listener.onCodecConfig(config)
