@@ -23,6 +23,8 @@ interface SessionGateway : AutoCloseable {
 
     fun pushVideo(ptsMs: Long, isKeyframe: Boolean, annexB: ByteArray)
 
+    fun pushAudio(ptsMs: Long, data: ByteArray)
+
     override fun close()
 }
 
@@ -44,6 +46,8 @@ private class RealSessionGateway(private val session: StreamSession) : SessionGa
 
     override fun pushVideo(ptsMs: Long, isKeyframe: Boolean, annexB: ByteArray) =
         session.pushVideo(ptsMs, isKeyframe, annexB)
+
+    override fun pushAudio(ptsMs: Long, data: ByteArray) = session.pushAudio(ptsMs, data)
 
     override fun close() {
         session.stop()

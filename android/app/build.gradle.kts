@@ -59,9 +59,6 @@ dependencies {
     implementation(libs.androidx.navigation.compose)
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.kotlinx.coroutines.android)
-    implementation(libs.camerax.camera2)
-    implementation(libs.camerax.lifecycle)
-    implementation(libs.camerax.view)
     implementation("net.java.dev.jna:jna:5.14.0@aar")
 
     debugImplementation(libs.androidx.compose.ui.tooling)

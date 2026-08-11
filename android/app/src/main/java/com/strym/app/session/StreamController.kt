@@ -2,7 +2,7 @@ package com.strym.app.session
 
 import android.os.SystemClock
 import android.util.Log
-import com.strym.app.capture.CameraStreamer
+import com.strym.app.capture.MediaIngest
 import com.strym.app.settings.BroadcastSettings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -73,7 +73,7 @@ fun buildSessionConfig(settings: BroadcastSettings): SessionConfig {
 class StreamController(
     private val sessionFactory: SessionFactory,
     private val clockNanos: () -> Long = { SystemClock.elapsedRealtimeNanos() },
-) : CameraStreamer.MediaIngest {
+) : MediaIngest {
 
     private val controlMutex = Mutex()
 
@@ -168,9 +168,11 @@ class StreamController(
     }
 
     /**
-     * Media-ingest entry points fed by the capture pipeline ([CameraStreamer])
-     * from the encoder thread. Both are no-ops without a live session and
-     * never block — the core copies into its bounded buffer and returns.
+     * Media-ingest entry points fed by the capture pipelines ([MediaIngest]:
+     * [com.strym.app.capture.CameraStreamer] and
+     * [com.strym.app.capture.AudioRecorder]) from the encoder threads. All are
+     * no-ops without a live session and never block — the core copies into its
+     * bounded buffer and returns.
      */
     override fun configureCodecs(avcDecoderConfig: ByteArray?, audioSpecificConfig: ByteArray?) {
         val current = gateway ?: return
@@ -183,6 +185,10 @@ class StreamController(
 
     override fun pushVideo(ptsMs: Long, isKeyframe: Boolean, annexB: ByteArray) {
         gateway?.pushVideo(ptsMs, isKeyframe, annexB)
+    }
+
+    override fun pushAudio(ptsMs: Long, aac: ByteArray) {
+        gateway?.pushAudio(ptsMs, aac)
     }
 
     /** Surface a capture-pipeline failure as a user-readable message. */

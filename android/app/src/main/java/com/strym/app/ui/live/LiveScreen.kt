@@ -2,10 +2,15 @@ package com.strym.app.ui.live
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.graphics.Matrix
+import android.graphics.SurfaceTexture
 import android.os.Build
+import android.util.Size
+import android.view.Surface
+import android.view.TextureView
+import android.view.View
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.camera.view.PreviewView
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -31,8 +36,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -43,6 +50,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.strym.app.R
+import com.strym.app.capture.computePreviewTransform
 import com.strym.app.service.StreamService
 import com.strym.app.session.StatsSnapshot
 import com.strym.app.session.StreamPhase
@@ -234,26 +242,77 @@ private fun StatCell(label: String, value: String) {
 }
 
 /**
- * Live preview. The [PreviewView] hands its surface provider to the service's
- * camera streamer, which owns the CameraX lifecycle. Idle → the camera draws
- * straight to this view; live → the camera is rebound to the encoder's input
- * surface (zero-copy) and this view shows the last frame until the stream
- * stops. This keeps the screen a live viewfinder without the UI owning the
- * camera session, so capture survives the screen turning off.
+ * Live viewfinder over raw Camera2. The [TextureView]'s surface is handed to
+ * the service's camera streamer, which runs the Camera2 session and keeps the
+ * viewfinder *and* the encoder's input surface bound at once — so the preview
+ * keeps showing live video while streaming instead of freezing on the last
+ * frame. The buffer is sensor-native (landscape); a rotation + fill transform
+ * makes it upright on screen. Passing the surface (and holding the service's
+ * camera open) only happens while the UI is visible or a stream is live, so
+ * capture survives the screen turning off.
  */
 @Composable
 fun CameraPreview(service: StreamService?, modifier: Modifier = Modifier) {
     val context = LocalContext.current
-    val previewView = remember(context) {
-        PreviewView(context).apply { scaleType = PreviewView.ScaleType.FILL_CENTER }
+    val sensorOrientation = remember { service?.camera?.sensorOrientation() ?: 0 }
+    val textureView = remember(context) { TextureView(context) }
+    val display = remember(context) { context.display }
+    var chosenSize by remember { mutableStateOf<Size?>(null) }
+
+    fun updateTransform() {
+        val bufferWidth = chosenSize?.width ?: return
+        val bufferHeight = chosenSize?.height ?: return
+        val transform = computePreviewTransform(
+            sensorOrientation = sensorOrientation,
+            deviceRotationDegrees = (display?.rotation ?: 0) * 90,
+            bufferWidth = bufferWidth,
+            bufferHeight = bufferHeight,
+            viewWidth = textureView.width,
+            viewHeight = textureView.height,
+        )
+        val matrix = Matrix()
+        val cx = textureView.width / 2f
+        val cy = textureView.height / 2f
+        matrix.postScale(transform.scale, transform.scale, cx, cy)
+        matrix.postRotate(transform.rotationDegrees.toFloat(), cx, cy)
+        textureView.setTransform(matrix)
     }
 
     DisposableEffect(service) {
-        service?.camera?.setPreviewSurface(previewView.surfaceProvider)
+        val listener = object : TextureView.SurfaceTextureListener {
+            override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
+                val size = service?.camera?.choosePreviewSize()
+                if (size != null) surface.setDefaultBufferSize(size.width, size.height)
+                chosenSize = size
+                service?.camera?.setPreviewSurface(Surface(surface), size)
+                updateTransform()
+            }
+
+            override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) {
+                val size = service?.camera?.choosePreviewSize()
+                if (size != null) surface.setDefaultBufferSize(size.width, size.height)
+                chosenSize = size
+                updateTransform()
+            }
+            override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean = true
+
+            override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {}
+        }
+        textureView.setSurfaceTextureListener(listener)
+        if (textureView.isAvailable) {
+            val surface = textureView.surfaceTexture
+            if (surface != null) listener.onSurfaceTextureAvailable(surface, 0, 0)
+        }
+        val layoutListener = View.OnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+            updateTransform()
+        }
+        textureView.addOnLayoutChangeListener(layoutListener)
         onDispose {
-            service?.camera?.setPreviewSurface(null)
+            textureView.removeOnLayoutChangeListener(layoutListener)
+            textureView.setSurfaceTextureListener(null)
+            service?.camera?.setPreviewSurface(null, null)
         }
     }
 
-    AndroidView(factory = { previewView }, modifier = modifier)
+    AndroidView(factory = { textureView }, modifier = modifier)
 }

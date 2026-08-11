@@ -28,6 +28,7 @@ private class FakeGateway : SessionGateway {
     val codecConfigs = mutableListOf<Pair<ByteArray?, ByteArray?>>()
     var configureException: StreamException? = null
     val pushedFrames = mutableListOf<Triple<Long, Boolean, Int>>()
+    val pushedAudio = mutableListOf<Pair<Long, Int>>()
 
     override fun start() {
         startCalls++
@@ -49,6 +50,10 @@ private class FakeGateway : SessionGateway {
 
     override fun pushVideo(ptsMs: Long, isKeyframe: Boolean, annexB: ByteArray) {
         pushedFrames.add(Triple(ptsMs, isKeyframe, annexB.size))
+    }
+
+    override fun pushAudio(ptsMs: Long, data: ByteArray) {
+        pushedAudio.add(ptsMs to data.size)
     }
 
     override fun close() {
@@ -299,6 +304,37 @@ class StreamControllerTest {
     }
 
     @Test
+    fun pushAudioForwardsFramesToTheActiveSession() = runTest {
+        val factory = FakeSessionFactory()
+        val controller = controller(factory)
+        assertTrue(controller.goLive(TEST_SETTINGS))
+        val gateway = factory.created.single()
+
+        controller.pushAudio(21, byteArrayOf(1, 2, 3))
+        controller.pushAudio(42, byteArrayOf(4, 5, 6, 7))
+        assertEquals(listOf(21L to 3, 42L to 4), gateway.pushedAudio)
+    }
+
+    @Test
+    fun pushAudioWithoutSessionIsANoOp() = runTest {
+        val controller = controller(FakeSessionFactory())
+        controller.pushAudio(21, byteArrayOf(1, 2, 3))
+        assertEquals(UiState(), controller.uiState.value)
+    }
+
+    @Test
+    fun pushAudioStopsAfterStopSession() = runTest {
+        val factory = FakeSessionFactory()
+        val controller = controller(factory)
+        assertTrue(controller.goLive(TEST_SETTINGS))
+        val gateway = factory.created.single()
+
+        controller.stopSession()
+        controller.pushAudio(21, byteArrayOf(1, 2, 3))
+        assertTrue(gateway.pushedAudio.isEmpty())
+    }
+
+    @Test
     fun configureCodecsPassesThroughAndSwallowsRejection() = runTest {
         val factory = FakeSessionFactory()
         val controller = controller(factory)
@@ -309,6 +345,11 @@ class StreamControllerTest {
         controller.configureCodecs(avc, null)
         assertEquals(1, gateway.codecConfigs.size)
         assertEquals(avc.toList(), gateway.codecConfigs.single().first!!.toList())
+
+        val asc = byteArrayOf(0x12, 0x10)
+        controller.configureCodecs(null, asc)
+        assertEquals(2, gateway.codecConfigs.size)
+        assertEquals(asc.toList(), gateway.codecConfigs.last().second!!.toList())
 
         // A rejection (e.g. wrong session state) must not escape to the
         // encoder thread.

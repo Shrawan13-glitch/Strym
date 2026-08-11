@@ -11,6 +11,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.lifecycle.LifecycleService
 import com.strym.app.R
+import com.strym.app.capture.AudioRecorder
 import com.strym.app.capture.CameraStreamer
 import com.strym.app.session.RealSessionFactory
 import com.strym.app.session.StreamController
@@ -24,9 +25,10 @@ import kotlinx.coroutines.launch
 
 /**
  * Keeps the broadcast alive with the screen off. Owns the [StreamController]
- * (one session per service lifetime) and the [CameraStreamer] (camera →
- * encoder → session); the UI binds to read `uiState`, hand over its preview
- * surface, and trigger go-live / stop.
+ * (one session per service lifetime), the [CameraStreamer] (camera → encoder →
+ * session) and the [AudioRecorder] (mic → AAC encoder → session); the UI binds
+ * to read `uiState`, hand over its viewfinder surface, and trigger go-live /
+ * stop.
  *
  * A [LifecycleService] so CameraX can bind its use cases to this service's
  * lifecycle instead of the activity's — capture then keeps running when the
@@ -44,6 +46,9 @@ class StreamService : LifecycleService() {
     lateinit var camera: CameraStreamer
         private set
 
+    lateinit var audio: AudioRecorder
+        private set
+
     inner class LocalBinder : Binder() {
         fun service(): StreamService = this@StreamService
     }
@@ -51,7 +56,8 @@ class StreamService : LifecycleService() {
     override fun onCreate() {
         super.onCreate()
         controller = StreamController(RealSessionFactory)
-        camera = CameraStreamer(this, this)
+        camera = CameraStreamer(this)
+        audio = AudioRecorder()
         scope.launch {
             controller.uiState.collect { state ->
                 if (state.hasSession) {
@@ -95,6 +101,9 @@ class StreamService : LifecycleService() {
                 types,
             )
             camera.startEncoding(settings, controller, ::captureFailed)
+            if (settings.audioEnabled) {
+                audio.start(controller, ::captureFailed)
+            }
         }
     }
 
@@ -104,12 +113,15 @@ class StreamService : LifecycleService() {
     }
 
     override fun onDestroy() {
+        camera.close()
+        audio.stop()
         scope.cancel()
         super.onDestroy()
     }
 
     private suspend fun teardown() {
         camera.stopEncoding()
+        audio.stop()
         controller.stopSession()
         ServiceCompat.stopForeground(this@StreamService, ServiceCompat.STOP_FOREGROUND_REMOVE)
         stopSelf()
