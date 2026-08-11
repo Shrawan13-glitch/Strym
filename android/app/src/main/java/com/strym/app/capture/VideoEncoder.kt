@@ -29,9 +29,10 @@ class VideoEncoderException(message: String, cause: Throwable? = null) : Excepti
  * (zero-copy: no ImageProxy, no GL round-trip).
  *
  * Runs MediaCodec in async mode on a dedicated thread. Output buffers are
- * converted AVCC → Annex B and handed to [Listener.onFrame] on that thread,
- * so pushing into the core never touches the camera or main threads. Low
- * latency by construction: CBR, 2 s IDR interval, no B-frames.
+ * converted AVCC → Annex B (unless the encoder already emits Annex B) and
+ * handed to [Listener.onFrame] on that thread, so pushing into the core never
+ * touches the camera or main threads. Low latency by construction: CBR, 2 s
+ * IDR interval, no B-frames.
  */
 class VideoEncoder(private val listener: Listener) {
 
@@ -184,7 +185,7 @@ class VideoEncoder(private val listener: Listener) {
                 buffer.get(working, 0, info.size)
                 codec.releaseOutputBuffer(index, false)
 
-                if (!NalUnit.avccToAnnexBInPlace(working, info.size)) {
+                if (!NalUnit.isAnnexB(working, info.size) && !NalUnit.avccToAnnexBInPlace(working, info.size)) {
                     Log.w(TAG, "dropping malformed AVCC output size=${info.size} head=${working.hexPrefix(8)}")
                     return
                 }

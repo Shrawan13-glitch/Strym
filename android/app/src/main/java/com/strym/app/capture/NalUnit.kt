@@ -3,9 +3,10 @@ package com.strym.app.capture
 /**
  * H.264 NAL-unit helpers for the MediaCodec output format.
  *
- * The encoder emits AVCC (4-byte big-endian length, then the unit); the core
- * consumes Annex B (start codes). Both prefixes are 4 bytes wide, so the
- * conversion is an in-place rewrite with no reallocation.
+ * Encoders usually emit AVCC (4-byte big-endian length, then the unit), but
+ * some output Annex B directly; the core consumes Annex B (start codes). Both
+ * AVCC prefixes are 4 bytes wide, so the conversion is an in-place rewrite
+ * with no reallocation.
  */
 object NalUnit {
     const val LENGTH_PREFIX_SIZE = 4
@@ -15,6 +16,21 @@ object NalUnit {
 
     /** NAL unit type: the low 5 bits of the header byte. */
     fun type(headerByte: Byte): Int = headerByte.toInt() and 0x1F
+
+    /**
+     * True when [data] (first [size] bytes) begins with an Annex B start code
+     * — either 4-byte (`00 00 00 01`) or 3-byte (`00 00 01`). Such output is
+     * already in the core's wire format and needs no AVCC conversion. A 3-byte
+     * prefix is only accepted when followed by a plausible NAL header, since
+     * an AVCC length of `00 00 01 xx` would otherwise alias it.
+     */
+    fun isAnnexB(data: ByteArray, size: Int): Boolean {
+        if (size < 4 || data[0] != 0.toByte() || data[1] != 0.toByte()) return false
+        if (data[2] == 0.toByte()) return data[3] == 1.toByte()
+        if (data[2] != 1.toByte()) return false
+        val header = data[3].toInt() and 0xFF
+        return header and 0x80 == 0 && (header and 0x1F) in 1..23
+    }
 
     /**
      * Rewrite AVCC [data] (the first [size] bytes) in place to Annex B,

@@ -105,6 +105,37 @@ class NalUnitTest {
     }
 
     @Test
+    fun isAnnexBRecognizesFourByteStartCode() {
+        val data = byteArrayOf(0, 0, 0, 1, 0x65, 0xB8.toByte(), 0x40, 0xF7.toByte())
+        assertTrue(NalUnit.isAnnexB(data, data.size))
+    }
+
+    @Test
+    fun isAnnexBRecognizesThreeByteStartCode() {
+        val data = byteArrayOf(0, 0, 1, 0x41, 0xE2.toByte(), 0x20)
+        assertTrue(NalUnit.isAnnexB(data, data.size))
+    }
+
+    @Test
+    fun isAnnexBRejectsAvccLengthPrefix() {
+        val data = avcc(byteArrayOf(0x65, 1, 2, 3))
+        assertFalse(NalUnit.isAnnexB(data, data.size))
+    }
+
+    @Test
+    fun isAnnexBRejectsAvccLengthAliasingStartCode() {
+        // AVCC length 0x000001xx looks like a 3-byte start code; the byte
+        // after it is payload, not a valid NAL header (forbidden bit set).
+        val data = byteArrayOf(0, 0, 1, 0x80.toByte(), 1, 2)
+        assertFalse(NalUnit.isAnnexB(data, data.size))
+    }
+
+    @Test
+    fun isAnnexBRejectsShortBuffer() {
+        assertFalse(NalUnit.isAnnexB(byteArrayOf(0, 0, 1), 3))
+    }
+
+    @Test
     fun typeMasksToFiveBits() {
         assertEquals(NalUnit.TYPE_SPS, NalUnit.type(0x67))
         assertEquals(NalUnit.TYPE_PPS, NalUnit.type(0x68))
