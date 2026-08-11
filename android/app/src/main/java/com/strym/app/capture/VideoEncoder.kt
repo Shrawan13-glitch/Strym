@@ -18,6 +18,10 @@ private const val I_FRAME_INTERVAL_S = 2
 private const val KEY_CSD_0 = "csd-0"
 private const val KEY_CSD_1 = "csd-1"
 
+/** First [n] bytes of [this] as hex, for diagnosing malformed encoder output. */
+private fun ByteArray.hexPrefix(n: Int): String =
+    take(minOf(n, size)).joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
+
 class VideoEncoderException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
 /**
@@ -181,13 +185,14 @@ class VideoEncoder(private val listener: Listener) {
                 codec.releaseOutputBuffer(index, false)
 
                 if (!NalUnit.avccToAnnexBInPlace(working, info.size)) {
-                    Log.w(TAG, "dropping malformed AVCC output")
+                    Log.w(TAG, "dropping malformed AVCC output size=${info.size} head=${working.hexPrefix(8)}")
                     return
                 }
                 val tracker = pts ?: return
                 val isKeyframe = info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0
                 listener.onFrame(tracker.next(info.presentationTimeUs), isKeyframe, working.copyOf(info.size))
             } catch (e: RuntimeException) {
+                Log.e(TAG, "encoder output handling failed size=${info.size} head=${working.hexPrefix(8)}", e)
                 fail("encoder output handling failed: ${e.message}")
             }
         }

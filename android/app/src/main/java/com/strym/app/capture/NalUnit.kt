@@ -19,8 +19,8 @@ object NalUnit {
     /**
      * Rewrite AVCC [data] (the first [size] bytes) in place to Annex B,
      * replacing every length prefix with a `00 00 00 01` start code. Returns
-     * false when the input is malformed: a zero-length unit, a truncated
-     * length field, or a length running past the end of the data.
+     * false when the input is malformed: a zero or negative length, a
+     * truncated length field, or a length running past the end of the data.
      */
     fun avccToAnnexBInPlace(data: ByteArray, size: Int): Boolean {
         var pos = 0
@@ -30,7 +30,9 @@ object NalUnit {
                 ((data[pos + 1].toInt() and 0xFF) shl 16) or
                 ((data[pos + 2].toInt() and 0xFF) shl 8) or
                 (data[pos + 3].toInt() and 0xFF)
-            if (len == 0 || pos + LENGTH_PREFIX_SIZE + len > size) return false
+            // A length with bit 31 set is not a valid AVCC size (NALs are far
+            // smaller than 2 GiB); it would drive the cursor negative below.
+            if (len <= 0 || pos + LENGTH_PREFIX_SIZE + len > size) return false
             data[pos] = 0
             data[pos + 1] = 0
             data[pos + 2] = 0

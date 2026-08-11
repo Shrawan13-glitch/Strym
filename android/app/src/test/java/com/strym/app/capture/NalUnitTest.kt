@@ -62,6 +62,15 @@ class NalUnitTest {
     }
 
     @Test
+    fun annexBRejectsNegativeLength() {
+        // A length field with bit 31 set must be treated as malformed, not
+        // used to walk the buffer backwards (previously crashed with an
+        // ArrayIndexOutOfBoundsException).
+        val data = byteArrayOf(0xB8.toByte(), 0x54, 0x2B, 0x4F, 0x65, 1)
+        assertFalse(NalUnit.avccToAnnexBInPlace(data, data.size))
+    }
+
+    @Test
     fun annexBIgnoresBytesBeyondSize() {
         // A larger buffer with stale tail: only the first `size` bytes count.
         val data = avcc(byteArrayOf(0x61, 7)).copyOf(64)
