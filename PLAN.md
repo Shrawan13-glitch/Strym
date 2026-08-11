@@ -4,8 +4,10 @@ Roadmap for the Android publisher app that embeds the `strym-core` via its
 frozen UniFFI facade. This is a **separate repo** from the core; the core is
 consumed read-only as a pinned git dependency (`android/rust/Cargo.toml`).
 
-State: **Phase B complete** (verified on device: session lifecycle, error
-surfacing, stats tick, live badge; see Phase B exit criteria below).
+State: **Phases A–D implemented; device verification outstanding.** Phase B
+verified on device; Phase C pipeline + Phase D audio are built and CI-compiled,
+but the Phase C/D exit criteria (host ingest + ffprobe) and the Phase D sync
+test still need a device run.
 
 ---
 
@@ -187,7 +189,7 @@ Exit criteria:
 
 ---
 
-## Phase C — Video pipeline (in progress)
+## Phase C — Video pipeline (implemented; device verification outstanding)
 
 Goal: camera frames reach the network as H.264.
 
@@ -208,17 +210,26 @@ Done:
 - [x] **Push path.** Async `MediaCodec.Callback` on a dedicated `HandlerThread`;
       `VideoPts` rebases output `presentationTimeUs` to stream-relative ms
       (monotonic, frame-rate fallback when unstamped) → `push_video`.
-- [x] Wiring + resilience hooks: `CameraStreamer` ↔ `StreamController`
+- [x] **Wiring + resilience hooks.** `CameraStreamer` ↔ `StreamController`
       (`MediaIngest`) ↔ core `push_video`/`configure_codecs`, keyframe request
       on `Reconnecting`. JVM tests for NalUnit, VideoPts, AvcDecoderConfig,
       EncoderSizeSelector.
+- [x] **Raw Camera2 dual-surface viewfinder (replaces CameraX preview).**
+      `CameraController` opens the back camera directly and binds *both* the UI
+      viewfinder (`TextureView`) and the encoder input surface in one capture
+      session, so the preview keeps updating while streaming (no frozen frame).
+      Surface swaps recreate the session; the aspect crop and the preview
+      rotation/fill transform are pure math (`CameraMath`, JVM-tested). A
+      `TextureView` is used because `SurfaceView` has no `setTransform` in the
+      SDK.
 
 Remaining:
 
-- [ ] **Rotation.** The zero-copy surface path cannot rotate pixels; encoded
-      output is sensor-native (landscape) unless software rotation (GL) is
-      added. Current state is the landscape stream; a portrait/upright stream
-      needs a decision (GL rotation vs. accepting landscape).
+- [ ] **Rotation decision (made).** The zero-copy surface path cannot rotate
+      pixels, so the *encoded* output stays sensor-native landscape. Decision:
+      accept landscape for the stream, and rotate only the on-screen viewfinder
+      upright via `TextureView.setTransform` (no GL pass). A portrait/upright
+      stream would require GL rotation — revisit only if the product demands it.
 - [ ] **Exit criteria (device).** Host-side RTMP ingest (`scripts/ingest-server.sh`)
       + `ffprobe`: `h264`, IDR cadence ≈2 s, correct resolution, monotonic PTS.
 
@@ -227,21 +238,32 @@ shows `h264` with IDR cadence ≈2 s and correct resolution; A/V PTS monotonic.
 
 ---
 
-## Phase D — Audio pipeline & A/V sync
+## Phase D — Audio pipeline & A/V sync (implemented; testing outstanding)
 
 Goal: synchronized AAC audio.
 
-Tasks:
+Done:
 
-1. **AudioRecord → MediaCodec AAC.** 48 kHz stereo AAC-LC, CBR 128 k, AOT_LC,
-   20 ms input frames fed via byte-buffer mode with explicit
-   `presentationTimeUs`. Capture timestamp at `read()` time (same clock).
-2. **ASC.** From csd-0 (`AudioSpecificConfig`) call
-   `configure_codecs(None, Some(asc))`; push raw AAC frames (no ADTS — the core
-   owns ADTS for FLV).
-3. **Sync check.** Write an instrumented test that pushes a synthetic
-   `push_video`+`push_audio` burst with known PTS into a loopback session and
-   asserts the muxed output interleaves within one frame of tolerance.
+- [x] **AudioRecord → MediaCodec AAC.** `capture/AudioRecorder.kt`: 48 kHz
+      PCM16, stereo with a mono fallback (phone mics are mono; the FLV tag the
+      core emits is stereo), AAC-LC CBR 128 k, AOT_LC, byte-buffer mode with
+      explicit `presentationTimeUs`. Each `read()` is stamped with the
+      monotonic clock; `StreamPts` rebases the encoder output to the same
+      first-frame origin the video track uses (JVM-tested).
+- [x] **ASC.** From csd-0 (`AudioSpecificConfig`) call
+      `configure_codecs(None, Some(asc))`; raw AAC frames are pushed with no
+      ADTS — the core owns ADTS for FLV. Wired via `StreamService.audio`,
+      honoring the `audioEnabled` setting.
+
+Remaining:
+
+- [ ] **Sync check.** Instrumented test pushing a synthetic `push_video` +
+      `push_audio` burst with known PTS into a loopback session, asserting the
+      muxed output interleaves within one frame of tolerance. Needs an in-test
+      loopback RTMP ingest server (the FFI surface is client-only), then a
+      device run (`make android-test`).
+- [ ] **Exit criteria (device).** Host-side ingest + `ffprobe`: AAC-LC + H.264,
+      A/V PTS drift < 1 frame over 60 s.
 
 Exit criteria: ingest output has AAC-LC + H.264; ffprobe A/V PTS drift < 1 frame
 over 60 s.

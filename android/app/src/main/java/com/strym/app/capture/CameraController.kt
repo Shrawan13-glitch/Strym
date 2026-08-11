@@ -1,6 +1,7 @@
 package com.strym.app.capture
 
 import android.content.Context
+import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraAccessException
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
@@ -15,7 +16,6 @@ import android.os.HandlerThread
 import android.util.Log
 import android.util.Size
 import android.view.Surface
-import android.view.SurfaceHolder
 import java.util.concurrent.Executor
 
 private const val TAG = "StrymCamera"
@@ -149,7 +149,7 @@ class CameraController(private val context: Context) {
             dirty = false
             val old = session
             session = null
-            old.close()
+            old?.close()
             return
         }
         if (!creating) {
