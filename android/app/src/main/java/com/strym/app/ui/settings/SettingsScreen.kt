@@ -13,6 +13,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -30,6 +31,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -45,6 +47,11 @@ import com.strym.app.settings.VideoPreset
 import com.strym.app.ui.live.formatBitrate
 import uniffi.stream_ffi.LatencyMode
 
+/**
+ * Broadcast settings UI. Controls edit a local draft; nothing persists (and
+ * nothing is applied) until the user taps Save — persisting on every
+ * keystroke raced with the DataStore round-trip and clobbered typing.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
@@ -53,6 +60,9 @@ fun SettingsScreen(
     onChange: (BroadcastSettings) -> Unit,
     onBack: () -> Unit,
 ) {
+    // Local draft; re-initialised only when the persisted settings change
+    // (initial load, or after a save round-trips back through the flow).
+    var draft by remember(settings) { mutableStateOf(settings) }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -79,8 +89,8 @@ fun SettingsScreen(
             Spacer(Modifier.height(4.dp))
 
             OutlinedTextField(
-                value = settings.serverUrl,
-                onValueChange = { onChange(settings.copy(serverUrl = it)) },
+                value = draft.serverUrl,
+                onValueChange = { draft = draft.copy(serverUrl = it) },
                 label = { Text(stringResource(R.string.settings_server_url)) },
                 placeholder = { Text(BroadcastSettings.RTMP_SCHEME + "a.rtmp.youtube.com/live2") },
                 singleLine = true,
@@ -89,8 +99,8 @@ fun SettingsScreen(
             )
 
             OutlinedTextField(
-                value = settings.app,
-                onValueChange = { onChange(settings.copy(app = it)) },
+                value = draft.app,
+                onValueChange = { draft = draft.copy(app = it) },
                 label = { Text(stringResource(R.string.settings_app)) },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
@@ -98,8 +108,8 @@ fun SettingsScreen(
 
             var keyVisible by rememberSaveable { mutableStateOf(false) }
             OutlinedTextField(
-                value = settings.streamKey,
-                onValueChange = { onChange(settings.copy(streamKey = it)) },
+                value = draft.streamKey,
+                onValueChange = { draft = draft.copy(streamKey = it) },
                 label = { Text(stringResource(R.string.settings_stream_key)) },
                 singleLine = true,
                 visualTransformation = if (keyVisible) VisualTransformation.None
@@ -125,13 +135,11 @@ fun SettingsScreen(
             SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
                 VideoPreset.entries.forEachIndexed { index, preset ->
                     SegmentedButton(
-                        selected = settings.preset == preset,
+                        selected = draft.preset == preset,
                         onClick = {
-                            onChange(
-                                settings.copy(
-                                    preset = preset,
-                                    videoBitrateBps = preset.defaultBitrateBps,
-                                ),
+                            draft = draft.copy(
+                                preset = preset,
+                                videoBitrateBps = preset.defaultBitrateBps,
                             )
                         },
                         shape = SegmentedButtonDefaults.itemShape(
@@ -146,12 +154,12 @@ fun SettingsScreen(
 
             Text(
                 text = stringResource(R.string.settings_video_bitrate) +
-                    ": " + formatBitrate(settings.videoBitrateBps.toDouble()),
+                    ": " + formatBitrate(draft.videoBitrateBps.toDouble()),
                 style = MaterialTheme.typography.titleSmall,
             )
             Slider(
-                value = settings.videoBitrateBps.toFloat(),
-                onValueChange = { onChange(settings.copy(videoBitrateBps = it.toInt())) },
+                value = draft.videoBitrateBps.toFloat(),
+                onValueChange = { draft = draft.copy(videoBitrateBps = it.toInt()) },
                 valueRange = MIN_BITRATE_BPS.toFloat()..MAX_BITRATE_BPS.toFloat(),
                 steps = BITRATE_STEPS,
                 modifier = Modifier.fillMaxWidth(),
@@ -164,8 +172,8 @@ fun SettingsScreen(
             SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
                 LATENCY_OPTIONS.forEachIndexed { index, (mode, label) ->
                     SegmentedButton(
-                        selected = settings.latencyMode == mode,
-                        onClick = { onChange(settings.copy(latencyMode = mode)) },
+                        selected = draft.latencyMode == mode,
+                        onClick = { draft = draft.copy(latencyMode = mode) },
                         shape = SegmentedButtonDefaults.itemShape(
                             index = index,
                             count = LATENCY_OPTIONS.size,
@@ -186,9 +194,17 @@ fun SettingsScreen(
                     style = MaterialTheme.typography.titleSmall,
                 )
                 Switch(
-                    checked = settings.audioEnabled,
-                    onCheckedChange = { onChange(settings.copy(audioEnabled = it)) },
+                    checked = draft.audioEnabled,
+                    onCheckedChange = { draft = draft.copy(audioEnabled = it) },
                 )
+            }
+
+            Button(
+                onClick = { onChange(draft) },
+                enabled = draft != settings,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(stringResource(R.string.settings_save))
             }
 
             if (streaming) {

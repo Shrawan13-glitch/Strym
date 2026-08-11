@@ -46,6 +46,7 @@
     <string name="settings_latency">Latency mode</string>
     <string name="settings_audio">Stream audio</string>
     <string name="settings_applies_next">Changes apply to the next stream.</string>
+    <string name="settings_save">Save</string>
     <string name="settings_latency_aggressive">Low latency</string>
     <string name="settings_latency_balanced">Balanced</string>
     <string name="settings_latency_lenient">Lenient</string>
