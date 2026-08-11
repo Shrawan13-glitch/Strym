@@ -57,7 +57,7 @@ class NalUnitTest {
 
     @Test
     fun annexBRejectsLengthOverrun() {
-        val data = avcc(byteArrayOf(0x65, 1)).copyOf(6) // claims 4 payload bytes, has 2
+        val data = byteArrayOf(0, 0, 0, 4, 0x65, 1) // claims 4 payload bytes, has 2
         assertFalse(NalUnit.avccToAnnexBInPlace(data, data.size))
     }
 
@@ -79,10 +79,10 @@ class NalUnitTest {
         NalUnit.forEachAnnexBNal(packet, packet.size) { offset, length -> found.add(offset to length) }
         assertEquals(2, found.size)
         val (spsOffset, spsLength) = found[0]
-        assertEquals(0x67, packet[spsOffset])
+        assertEquals(0x67.toByte(), packet[spsOffset])
         assertEquals(sps.size, spsLength)
         val (ppsOffset, ppsLength) = found[1]
-        assertEquals(0x68, packet[ppsOffset])
+        assertEquals(0x68.toByte(), packet[ppsOffset])
         assertEquals(pps.size, ppsLength)
     }
 
@@ -92,7 +92,7 @@ class NalUnitTest {
         val found = mutableListOf<Int>()
         NalUnit.forEachAnnexBNal(packet, packet.size) { offset, _ -> found.add(offset) }
         assertEquals(1, found.size)
-        assertEquals(0x65, packet[found.single()])
+        assertEquals(0x65.toByte(), packet[found.single()])
     }
 
     @Test

@@ -13,7 +13,7 @@ import java.nio.ByteBuffer
 object AvcDecoderConfig {
 
     fun build(sps: ByteArray, pps: ByteArray): ByteArray {
-        val out = ByteArray(6 + sps.size + pps.size)
+        val out = ByteArray(11 + sps.size + pps.size)
         out[0] = 0x01 // configurationVersion
         out[1] = sps.getOrElse(1) { 0x64 } // AVCProfileIndication
         out[2] = sps.getOrElse(2) { 0 } // profile_compatibility
