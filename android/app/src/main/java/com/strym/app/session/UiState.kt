@@ -1,5 +1,7 @@
 package com.strym.app.session
 
+import androidx.annotation.StringRes
+import com.strym.app.R
 import uniffi.stream_ffi.SessionState
 import uniffi.stream_ffi.SessionStats
 import uniffi.stream_ffi.StreamException
@@ -58,8 +60,16 @@ data class UiState(
             phase == StreamPhase.EXHAUSTED
 }
 
-fun StreamException.toUserMessage(): String = when (this) {
-    is StreamException.InvalidConfig -> "Stream settings rejected: $message"
-    is StreamException.InvalidState -> "Session state error: $message"
-    is StreamException.Engine -> "Streaming engine error: $message"
+fun StreamException.toUserError(): UserError = when (this) {
+    is StreamException.InvalidConfig -> UserError(R.string.error_invalid_config, message)
+    is StreamException.InvalidState -> UserError(R.string.error_invalid_state, message)
+    is StreamException.Engine -> UserError(R.string.error_engine, message)
 }
+
+/**
+ * A user-facing error: the documented string resource for the error class
+ * plus the core's free-form detail. Resolved to text by the
+ * [StreamController]'s injected resolver (production: Context.getString;
+ * tests: a plain lambda), so no string lives in code.
+ */
+data class UserError(@StringRes val stringRes: Int, val detail: String)

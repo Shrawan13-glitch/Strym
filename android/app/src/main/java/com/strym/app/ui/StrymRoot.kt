@@ -19,6 +19,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.strym.app.R
+import com.strym.app.StrymApp
+import com.strym.app.logging.CoreLogBuffer
+import com.strym.app.logging.LogDump
 import com.strym.app.service.StreamService
 import com.strym.app.session.UiState
 import com.strym.app.settings.BroadcastSettings
@@ -33,6 +37,7 @@ import kotlinx.coroutines.launch
 fun StrymRoot() {
     val service = rememberStreamService()
     val context = LocalContext.current
+    val app = context.applicationContext as StrymApp
     val repository = remember(context) { SettingsRepository(context) }
     val settings by repository.settings.collectAsState(initial = BroadcastSettings())
     val scope = rememberCoroutineScope()
@@ -65,6 +70,7 @@ fun StrymRoot() {
                             scope.launch { repository.update { next } }
                         },
                         onBack = { navController.popBackStack() },
+                        onReportIssue = { context.startActivity(shareLogDumpIntent(context, app.logBuffer)) },
                     )
                 }
             }
@@ -115,3 +121,11 @@ fun rememberStreamService(): StreamService? {
 
 private const val ROUTE_LIVE = "live"
 private const val ROUTE_SETTINGS = "settings"
+
+/** Build a chooser intent sharing the (already redacted) log dump. */
+private fun shareLogDumpIntent(context: Context, buffer: CoreLogBuffer): Intent =
+    Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_SUBJECT, context.getString(R.string.report_share_title))
+        putExtra(Intent.EXTRA_TEXT, LogDump.format(buffer))
+    }

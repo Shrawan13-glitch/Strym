@@ -304,11 +304,16 @@ Tasks:
 
 1. **Proguard/R8 rules** for UniFFI (keep native exports, `@Keep` bindings);
    shrink by arch + ABI split; verify a release APK on a clean device.
-2. **Crash reporting.** Wire `LogSink` → Logcat in debug, a structured sink
-   (Crashlytics/Atlas) in release; no stream key ever logged (redact in the
-   sink).
-3. **Error taxonomy.** Map every `StreamError` to a documented user string in
-   `res/values/strings.xml`; add a "report issue" export of last N log records.
+2. **Logging hardening (partial).** `LogSink` → logcat in debug plus a
+   structured sink (`StrymLogSink`) that redacts the stream key before it
+   reaches logcat or the ring buffer, so nothing sensitive leaves the app.
+   Still open: a crash reporter (Crashlytics/Atlas) wired to the same sink.
+3. **Error taxonomy (partial).** Every `StreamError` maps to a documented
+   string in `res/values/strings.xml` (`error_invalid_config` /
+   `error_invalid_state` / `error_engine`); the controller resolves them via an
+   injected `Context.getString`-backed lambda so no message string lives in
+   code. A "Report an issue" button in Settings shares the last N (already
+   redacted) core log records.
 4. **Telemetry + analytics** gated behind consent; privacy policy.
 5. **Release checklist.** Signing, versioning (semver mirroring core),
    Play listing, automated UI smoke on release build.

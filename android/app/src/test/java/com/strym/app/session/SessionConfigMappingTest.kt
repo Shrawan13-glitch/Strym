@@ -1,5 +1,6 @@
 package com.strym.app.session
 
+import com.strym.app.R
 import com.strym.app.settings.BroadcastSettings
 import com.strym.app.settings.VideoPreset
 import org.junit.Assert.assertEquals
@@ -53,17 +54,18 @@ class SessionConfigMappingTest {
     }
 
     @Test
-    fun exceptionMessagesAreUserReadable() {
-        assertTrue(
-            StreamException.InvalidConfig("bad url").toUserMessage().contains("bad url"),
-        )
-        assertTrue(
-            StreamException.InvalidState("already running").toUserMessage()
-                .contains("already running"),
-        )
-        assertTrue(
-            StreamException.Engine("codec rejected").toUserMessage().contains("codec rejected"),
-        )
+    fun exceptionMessagesMapToUserErrorResources() {
+        val config = StreamException.InvalidConfig("bad url").toUserError()
+        assertEquals(R.string.error_invalid_config, config.stringRes)
+        assertEquals("bad url", config.detail)
+
+        val state = StreamException.InvalidState("already running").toUserError()
+        assertEquals(R.string.error_invalid_state, state.stringRes)
+        assertEquals("already running", state.detail)
+
+        val engine = StreamException.Engine("codec rejected").toUserError()
+        assertEquals(R.string.error_engine, engine.stringRes)
+        assertEquals("codec rejected", engine.detail)
     }
 
     @Test

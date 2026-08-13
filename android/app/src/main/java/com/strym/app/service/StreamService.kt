@@ -11,6 +11,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.lifecycle.LifecycleService
 import com.strym.app.R
+import com.strym.app.StrymApp
 import com.strym.app.capture.AudioRecorder
 import com.strym.app.capture.CameraStreamer
 import com.strym.app.session.RealSessionFactory
@@ -55,7 +56,10 @@ class StreamService : LifecycleService() {
 
     override fun onCreate() {
         super.onCreate()
-        controller = StreamController(RealSessionFactory)
+        controller = StreamController(
+            RealSessionFactory,
+            resolveError = { error -> getString(error.stringRes, error.detail) },
+        )
         camera = CameraStreamer(this)
         audio = AudioRecorder()
         scope.launch {
@@ -80,6 +84,9 @@ class StreamService : LifecycleService() {
 
     /** Create + start the session and capture, then promote to the foreground. */
     fun goLive(settings: BroadcastSettings) {
+        // Mask the stream key in every core log record from this session on —
+        // the log buffer is shared and its dump may leave the app.
+        (applicationContext as StrymApp).logRedactor.addSecret(settings.streamKey)
         // Enter the STARTED state: CameraX only runs the camera for lifecycles
         // at least STARTED, and the foreground promotion below builds on it.
         startService(Intent(this, StreamService::class.java))

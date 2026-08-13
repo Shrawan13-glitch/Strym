@@ -105,7 +105,8 @@ class StreamControllerTest {
 
     private var nanos = 1_000_000_000L
 
-    private fun controller(factory: FakeSessionFactory) = StreamController(factory) { nanos }
+    private fun controller(factory: FakeSessionFactory) =
+        StreamController(factory, clockNanos = { nanos })
 
     @Test
     fun goLiveTransitionsConnectingThenLive() = runTest {
@@ -356,6 +357,18 @@ class StreamControllerTest {
         gateway.configureException = StreamException.InvalidState("not ready")
         controller.configureCodecs(avc, null)
         assertEquals(2, gateway.codecConfigs.size)
+    }
+
+    @Test
+    fun errorMessagesFlowThroughInjectedResolver() = runTest {
+        val factory = FakeSessionFactory()
+        factory.createException = StreamException.InvalidConfig("app must not be empty")
+        val controller = StreamController(factory, clockNanos = { nanos }) { error ->
+            "formatted: ${error.detail}"
+        }
+
+        assertFalse(controller.goLive(TEST_SETTINGS))
+        assertEquals("formatted: app must not be empty", controller.uiState.value.errorMessage)
     }
 
     @Test

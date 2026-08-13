@@ -73,6 +73,7 @@ fun buildSessionConfig(settings: BroadcastSettings): SessionConfig {
 class StreamController(
     private val sessionFactory: SessionFactory,
     private val clockNanos: () -> Long = { SystemClock.elapsedRealtimeNanos() },
+    private val resolveError: (UserError) -> String = { it.detail },
 ) : MediaIngest {
 
     private val controlMutex = Mutex()
@@ -126,7 +127,7 @@ class StreamController(
         val created = try {
             sessionFactory.create(config, listener)
         } catch (e: StreamException) {
-            _uiState.value = UiState(errorMessage = e.toUserMessage())
+            _uiState.value = UiState(errorMessage = resolveError(e.toUserError()))
             return@withLock false
         }
         gateway = created
@@ -136,7 +137,7 @@ class StreamController(
         } catch (e: StreamException) {
             gateway = null
             withContext(Dispatchers.IO) { created.close() }
-            _uiState.value = UiState(errorMessage = e.toUserMessage())
+            _uiState.value = UiState(errorMessage = resolveError(e.toUserError()))
             return@withLock false
         }
         true
@@ -153,7 +154,7 @@ class StreamController(
             current.retry()
         } catch (e: StreamException) {
             _uiState.update {
-                it.copy(phase = current.state().toPhase(), errorMessage = e.toUserMessage())
+                it.copy(phase = current.state().toPhase(), errorMessage = resolveError(e.toUserError()))
             }
         }
     }
@@ -179,7 +180,7 @@ class StreamController(
         try {
             current.configureCodecs(avcDecoderConfig, audioSpecificConfig)
         } catch (e: StreamException) {
-            Log.w(TAG, "codec config rejected: ${e.toUserMessage()}")
+            Log.w(TAG, "codec config rejected: ${resolveError(e.toUserError())}")
         }
     }
 
