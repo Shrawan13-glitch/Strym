@@ -93,6 +93,11 @@ class AudioRecorder {
         } catch (e: RuntimeException) {
             return report("Could not start the audio encoder: ${e.message}")
         }
+        try {
+            record.startRecording()
+        } catch (e: RuntimeException) {
+            return report("Could not start the microphone: ${e.message}")
+        }
         val info = MediaCodec.BufferInfo()
         while (running) {
             val inIndex = codec.dequeueInputBuffer(DEQUEUE_TIMEOUT_US)
