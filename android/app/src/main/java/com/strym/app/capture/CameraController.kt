@@ -256,7 +256,15 @@ class CameraController(private val context: Context) {
             it.width.toFloat() / it.height
         } ?: 0f
         val request = try {
-            device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+            // The encoder surface needs a fixed, steady frame rate and record
+            // semantics; TEMPLATE_PREVIEW is tuned for the viewfinder and on
+            // many devices never drives a codec surface at all.
+            val template = if (encoder != null) {
+                CameraDevice.TEMPLATE_RECORD
+            } else {
+                CameraDevice.TEMPLATE_PREVIEW
+            }
+            device.createCaptureRequest(template).apply {
                 preview?.let { addTarget(it) }
                 encoder?.let { addTarget(it) }
                 if (aspect > 0f) {

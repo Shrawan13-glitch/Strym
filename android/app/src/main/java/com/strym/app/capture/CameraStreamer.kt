@@ -70,6 +70,13 @@ class CameraStreamer(context: Context) {
             Log.w(TAG, "preset ${preset.width}x${preset.height} clamped to ${selection.size}")
         }
         val created = VideoEncoder(encoderListener)
+        // Wire the listener target before starting the encoder: its first
+        // onOutputFormatChanged (SPS/PPS config) can fire as soon as start()
+        // returns, and must not be dropped because ingest was still null.
+        encoder = created
+        encoderSize = selection.size
+        this.ingest = ingest
+        this.onError = onError
         try {
             created.start(
                 VideoEncoder.Config(
@@ -81,14 +88,14 @@ class CameraStreamer(context: Context) {
                 codecName = selection.codecName,
             )
         } catch (e: VideoEncoderException) {
+            encoder = null
+            encoderSize = null
+            this.ingest = null
+            this.onError = null
             created.stop()
             onError("Could not start the camera encoder: ${e.message}")
             return
         }
-        encoder = created
-        encoderSize = selection.size
-        this.ingest = ingest
-        this.onError = onError
         encoding = true
         reconfigure()
     }

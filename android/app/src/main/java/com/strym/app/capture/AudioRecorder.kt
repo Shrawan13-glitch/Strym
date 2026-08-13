@@ -101,11 +101,15 @@ class AudioRecorder {
                 if (buffer != null) {
                     val read = record.read(buffer, buffer.remaining())
                     val nowUs = SystemClock.elapsedRealtimeNanos() / 1_000L
-                    if (read > 0) {
-                        codec.queueInputBuffer(inIndex, 0, read, nowUs, 0)
-                    } else {
-                        codec.queueInputBuffer(inIndex, 0, 0, nowUs, 0)
-                        if (read < 0) Log.w(TAG, "mic read error $read")
+                    when {
+                        read > 0 -> codec.queueInputBuffer(inIndex, 0, read, nowUs, 0)
+                        read == 0 -> {
+                            // No samples yet (blocking read returned 0): skip the
+                            // queue and reuse the slot next pass. Queuing a
+                            // zero-length buffer without EOS is invalid for AAC
+                            // and can corrupt the encoder output.
+                        }
+                        else -> return report("microphone read failed ($read)")
                     }
                 }
             }
