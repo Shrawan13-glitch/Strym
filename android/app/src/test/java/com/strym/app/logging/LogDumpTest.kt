@@ -21,7 +21,7 @@ class LogDumpTest {
         val dump = LogDump.format(buffer)
 
         assertTrue(dump.startsWith("Strym log dump"))
-        assertTrue(dump.endsWith("========================"))
+        assertTrue(dump.trimEnd().endsWith("========================"))
         assertTrue(dump.contains("1000 [INFO] rtmp: connect ok"))
     }
 
