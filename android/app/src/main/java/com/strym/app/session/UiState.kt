@@ -61,9 +61,9 @@ data class UiState(
 }
 
 fun StreamException.toUserError(): UserError = when (this) {
-    is StreamException.InvalidConfig -> UserError(R.string.error_invalid_config, message)
-    is StreamException.InvalidState -> UserError(R.string.error_invalid_state, message)
-    is StreamException.Engine -> UserError(R.string.error_engine, message)
+    is StreamException.InvalidConfig -> UserError(R.string.error_invalid_config, message.orEmpty())
+    is StreamException.InvalidState -> UserError(R.string.error_invalid_state, message.orEmpty())
+    is StreamException.Engine -> UserError(R.string.error_engine, message.orEmpty())
 }
 
 /**
