@@ -199,11 +199,18 @@ class AudioRecorder {
     private fun flushHeld() {
         val nowMs = SystemClock.elapsedRealtimeNanos() / 1_000_000L
         val pts = pts ?: return
+        val maxDue = held.lastOrNull()?.dueMs ?: return
         while (true) {
             val head = held.peekFirst() ?: return
             if (head.dueMs > nowMs) return
             held.removeFirst()
-            val dts = pts.next(head.dueMs)
+            // Anchor the newest flushed frame to its delivery (flush) wall time,
+            // the same base video uses: video dts is delivery-anchored (its
+            // first-frame anchor is set at delivery), so audio must be too, or
+            // the video pipeline latency shows up as a constant offset and
+            // trips the core's rebase. Frames released together keep their
+            // sample-spaced separation around that anchor.
+            val dts = pts.next(nowMs + (head.dueMs - maxDue))
             if (audioLog++ % 25 == 0) {
                 Log.d(TAG, "AUDIO dts=$dts due=${head.dueMs} wall=$nowMs")
             }
