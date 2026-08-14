@@ -50,6 +50,7 @@ class AudioRecorder {
     private var pts: StreamPts? = null
     private val held = ArrayDeque<HeldAudio>()
     private val configSent = AtomicBoolean(false)
+    private var firstFrameWallMs = -1L
 
     /** Start capture. Fatal failures are reported via [onError] immediately. */
     fun start(ingest: MediaIngest, onError: (String) -> Unit, clock: SessionClock) {
@@ -70,6 +71,7 @@ class AudioRecorder {
         record = recorder
         codec = encoder
         configSent.set(false)
+        firstFrameWallMs = -1L
         pts = StreamPts(clock)
         held.clear()
         running = true
@@ -92,6 +94,7 @@ class AudioRecorder {
         onError = null
         pts = null
         held.clear()
+        firstFrameWallMs = -1L
     }
 
     private fun encodeLoop() {
@@ -107,24 +110,43 @@ class AudioRecorder {
         } catch (e: RuntimeException) {
             return report("Could not start the microphone: ${e.message}")
         }
+        // The mic delivers coarse PCM chunks (its buffer is many AAC frames
+        // long), so feed the encoder exactly one AAC frame per queue and stamp
+        // it from a sample counter. Stamping each read with the wall clock
+        // produced output frames at chunk-boundary spacing (40 ms) instead of
+        // the uniform 21 ms of real audio, which the decoder heard as rhythmic
+        // gaps (the "cracking" voice).
+        val bytesPerSample = record.channelCount * 2
+        val frameBytes = 1024 * bytesPerSample
+        val frameUs = 1_000_000L * 1024 / SAMPLE_RATE_HZ
+        val pending = ByteArray(frameBytes * 4)
+        var pendingBytes = 0
+        var frameIndex = 0L
         val info = MediaCodec.BufferInfo()
         while (running) {
-            val inIndex = codec.dequeueInputBuffer(DEQUEUE_TIMEOUT_US)
-            if (inIndex >= 0) {
+            val read = record.read(pending, pendingBytes, pending.size - pendingBytes)
+            when {
+                read > 0 -> pendingBytes += read
+                read == 0 -> {
+                    // No samples yet (blocking read returned 0): try again next
+                    // pass. Queuing a zero-length buffer without EOS is invalid
+                    // for AAC and can corrupt the encoder output.
+                }
+                else -> return report("microphone read failed ($read)")
+            }
+            while (pendingBytes >= frameBytes) {
+                val inIndex = codec.dequeueInputBuffer(DEQUEUE_TIMEOUT_US)
+                if (inIndex < 0) break
                 val buffer = codec.getInputBuffer(inIndex)
                 if (buffer != null) {
-                    val read = record.read(buffer, buffer.remaining())
-                    val nowUs = SystemClock.elapsedRealtimeNanos() / 1_000L
-                    when {
-                        read > 0 -> codec.queueInputBuffer(inIndex, 0, read, nowUs, 0)
-                        read == 0 -> {
-                            // No samples yet (blocking read returned 0): skip the
-                            // queue and reuse the slot next pass. Queuing a
-                            // zero-length buffer without EOS is invalid for AAC
-                            // and can corrupt the encoder output.
-                        }
-                        else -> return report("microphone read failed ($read)")
+                    buffer.put(pending, 0, frameBytes)
+                    if (firstFrameWallMs < 0L) {
+                        firstFrameWallMs = SystemClock.elapsedRealtimeNanos() / 1_000_000L
                     }
+                    codec.queueInputBuffer(inIndex, 0, frameBytes, frameIndex * frameUs, 0)
+                    frameIndex++
+                    System.arraycopy(pending, frameBytes, pending, 0, pendingBytes - frameBytes)
+                    pendingBytes -= frameBytes
                 }
             }
             drainOutput(codec, info)
@@ -148,7 +170,7 @@ class AudioRecorder {
                             buffer.limit(info.offset + info.size)
                             val aac = ByteArray(info.size)
                             buffer.get(aac)
-                            hold(info.presentationTimeUs / 1_000L, aac)
+                            hold(info.presentationTimeUs, aac)
                         }
                     }
                     codec.releaseOutputBuffer(outIndex, false)
@@ -157,8 +179,12 @@ class AudioRecorder {
         }
     }
 
-    private fun hold(rawMs: Long, aac: ByteArray) {
-        val captureMs = if (rawMs > 0) rawMs else SystemClock.elapsedRealtimeNanos() / 1_000_000L
+    private fun hold(rawUs: Long, aac: ByteArray) {
+        val captureMs = if (rawUs > 0 && firstFrameWallMs >= 0L) {
+            firstFrameWallMs + rawUs / 1_000L
+        } else {
+            SystemClock.elapsedRealtimeNanos() / 1_000_000L
+        }
         held.addLast(HeldAudio(captureMs + AUDIO_HOLDBACK_MS, aac))
         flushHeld()
     }
