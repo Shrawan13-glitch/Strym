@@ -33,6 +33,7 @@ class CameraStreamer(context: Context) {
     private var ingest: MediaIngest? = null
     private var onError: ((String) -> Unit)? = null
     private var encoding = false
+    private var videoLog = 0
 
     /** A supported viewfinder size near the 16:9 encoder aspect. */
     fun choosePreviewSize(): Size? = controller.choosePreviewSize(PREVIEW_ASPECT)
@@ -136,6 +137,9 @@ class CameraStreamer(context: Context) {
         }
 
         override fun onFrame(ptsMs: Long, isKeyframe: Boolean, annexB: ByteArray) {
+            if (videoLog++ % 30 == 0) {
+                Log.d(TAG, "VIDEO dts=$ptsMs wall=${SystemClock.elapsedRealtimeNanos() / 1_000_000L}")
+            }
             ingest?.pushVideo(ptsMs, isKeyframe, annexB)
         }
 

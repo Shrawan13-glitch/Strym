@@ -50,6 +50,7 @@ class AudioRecorder {
     private var pts: StreamPts? = null
     private val held = ArrayDeque<HeldAudio>()
     private val configSent = AtomicBoolean(false)
+    private var audioLog = 0
 
     /** Start capture. Fatal failures are reported via [onError] immediately. */
     fun start(ingest: MediaIngest, onError: (String) -> Unit, clock: SessionClock) {
@@ -202,7 +203,11 @@ class AudioRecorder {
             val head = held.peekFirst() ?: return
             if (head.dueMs > nowMs) return
             held.removeFirst()
-            ingest?.pushAudio(pts.next(head.dueMs), head.aac)
+            val dts = pts.next(head.dueMs)
+            if (audioLog++ % 25 == 0) {
+                Log.d(TAG, "AUDIO dts=$dts due=${head.dueMs} wall=$nowMs")
+            }
+            ingest?.pushAudio(dts, head.aac)
         }
     }
 
