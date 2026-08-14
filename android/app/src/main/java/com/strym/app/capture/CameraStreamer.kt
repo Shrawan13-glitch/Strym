@@ -1,6 +1,7 @@
 package com.strym.app.capture
 
 import android.content.Context
+import android.os.SystemClock
 import android.util.Log
 import android.util.Size
 import android.view.Surface
