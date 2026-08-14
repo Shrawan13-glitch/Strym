@@ -14,6 +14,7 @@ import com.strym.app.R
 import com.strym.app.StrymApp
 import com.strym.app.capture.AudioRecorder
 import com.strym.app.capture.CameraStreamer
+import com.strym.app.capture.SessionClock
 import com.strym.app.session.RealSessionFactory
 import com.strym.app.session.StreamController
 import com.strym.app.session.StreamPhase
