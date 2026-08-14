@@ -123,10 +123,15 @@ class AudioRecorder {
         var pendingStartSample = 0L
         val info = MediaCodec.BufferInfo()
         while (running) {
-            val nowUs = SystemClock.elapsedRealtimeNanos() / 1_000L
             val read = record.read(pending, pendingBytes, pending.size - pendingBytes)
             when {
                 read > 0 -> {
+                    // A blocking read returns samples captured up to when it
+                    // returns, so take the wall stamp *after* the read; a stamp
+                    // taken before it makes every frame early by the read
+                    // duration, letting audio dts lag the video high-water and
+                    // trip the core's rebase on every burst.
+                    val nowUs = SystemClock.elapsedRealtimeNanos() / 1_000L
                     if (pendingBytes == 0) pendingStartSample = totalSamplesFed
                     totalSamplesFed += read / bytesPerSample
                     pendingBytes += read
