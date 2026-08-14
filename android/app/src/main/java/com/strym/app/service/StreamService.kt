@@ -3,10 +3,12 @@ package com.strym.app.service
 import android.app.Notification
 import android.app.NotificationManager
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Binder
 import android.os.IBinder
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.lifecycle.LifecycleService
@@ -50,6 +52,8 @@ class StreamService : LifecycleService() {
 
     lateinit var audio: AudioRecorder
         private set
+
+    private var wakeLock: PowerManager.WakeLock? = null
 
     inner class LocalBinder : Binder() {
         fun service(): StreamService = this@StreamService
@@ -113,7 +117,25 @@ class StreamService : LifecycleService() {
             if (settings.audioEnabled) {
                 audio.start(controller, ::captureFailed, clock)
             }
+            acquireWakeLock()
         }
+    }
+
+    /** Hold a partial wake lock while live so Doze cannot starve capture. */
+    private fun acquireWakeLock() {
+        if (wakeLock?.isHeld == true) return
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "strym:stream").also {
+            it.setReferenceCounted(false)
+            it.acquire()
+        }
+    }
+
+    private fun releaseWakeLock() {
+        wakeLock?.let {
+            if (it.isHeld) it.release()
+        }
+        wakeLock = null
     }
 
     /** Stop the session, leave the foreground, and release the start. */
@@ -124,6 +146,7 @@ class StreamService : LifecycleService() {
     override fun onDestroy() {
         camera.close()
         audio.stop()
+        releaseWakeLock()
         scope.cancel()
         super.onDestroy()
     }
@@ -132,6 +155,7 @@ class StreamService : LifecycleService() {
         camera.stopEncoding()
         audio.stop()
         controller.stopSession()
+        releaseWakeLock()
         ServiceCompat.stopForeground(this@StreamService, ServiceCompat.STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
