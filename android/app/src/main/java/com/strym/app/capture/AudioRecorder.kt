@@ -18,7 +18,7 @@ private const val SAMPLE_RATE_HZ = 48_000
 private const val BITRATE_BPS = 128_000
 private const val DEQUEUE_TIMEOUT_US = 10_000L
 private const val MAX_INPUT_SIZE = 8_192
-private const val AUDIO_HOLDBACK_MS = 200L
+private const val AUDIO_HOLDBACK_MS = 270L
 
 private data class HeldAudio(val dueMs: Long, val aac: ByteArray)
 
