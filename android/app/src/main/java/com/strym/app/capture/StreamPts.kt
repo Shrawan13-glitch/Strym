@@ -1,29 +1,27 @@
 package com.strym.app.capture
 
 /**
- * Rebases an encoder's raw timestamps onto a stream-relative base, like
- * [VideoPts] does for video but for audio's byte-buffer output, whose
- * `presentationTimeUs` values are always stamped by the recorder at capture
- * time. The first frame becomes 0 (matching the video track's own origin, so
- * the core's first-packet normalization sees a small, constant A/V skew rather
- * than a session-clock offset) and output is clamped monotonic.
+ * Rebases the audio track onto the session's shared [SessionClock.originMs].
+ *
+ * Audio's `presentationTimeUs` values are always stamped by the recorder at
+ * capture (wall clock), so each output buffer is simply delivery wall time
+ * minus the shared origin — the same base the video track uses. Output is
+ * clamped monotonic; there is no per-track first-frame rebasing, which is what
+ * kept a constant offset between the tracks in the first place.
  */
-class StreamPts {
+class StreamPts(private val clock: SessionClock) {
 
-    private var origin = Long.MAX_VALUE
     private var last = -1L
 
     /** Timestamp in ms for an output buffer stamped [rawMs] by the encoder. */
     fun next(rawMs: Long): Long {
-        if (rawMs < origin) origin = rawMs
-        val rebased = rawMs - origin
+        val rebased = rawMs - clock.originMs
         val monotonic = if (rebased > last) rebased else last
         last = monotonic
         return monotonic
     }
 
     fun reset() {
-        origin = Long.MAX_VALUE
         last = -1L
     }
 }

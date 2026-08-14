@@ -8,6 +8,7 @@ import android.media.MediaFormat
 import android.media.MediaRecorder
 import android.os.SystemClock
 import android.util.Log
+import java.util.ArrayDeque
 import java.util.concurrent.atomic.AtomicBoolean
 
 private const val TAG = "StrymAudio"
@@ -17,6 +18,9 @@ private const val SAMPLE_RATE_HZ = 48_000
 private const val BITRATE_BPS = 128_000
 private const val DEQUEUE_TIMEOUT_US = 10_000L
 private const val MAX_INPUT_SIZE = 8_192
+private const val AUDIO_HOLDBACK_MS = 120L
+
+private data class HeldAudio(val dueMs: Long, val aac: ByteArray)
 
 /**
  * Microphone → AAC encoder → session, the audio half of [MediaIngest].
@@ -24,10 +28,11 @@ private const val MAX_INPUT_SIZE = 8_192
  * [AudioRecord] (48 kHz PCM16, stereo with a mono fallback — phone mics are
  * mono but the FLV tag the core emits is stereo) feeds a byte-buffer
  * MediaCodec AAC-LC encoder. Each read is stamped with the monotonic clock at
- * capture time, then [StreamPts] rebases the encoder's output to its own
- * origin — the same first-frame base the video track uses, so the core's
- * first-packet normalization sees a small constant skew instead of a
- * session-clock offset. Raw AAC frames go out (no ADTS — the core owns the
+ * capture time, then the encoder's output is delayed by [AUDIO_HOLDBACK_MS] so
+ * audio lands on the wire alongside video — video's pipeline (~130 ms) runs
+ * far behind audio's (~20 ms), which is what let audio's dts race ahead and
+ * trip the core's rebase. Both tracks rebase onto the same
+ * [SessionClock.originMs]. Raw AAC frames go out (no ADTS — the core owns the
  * FLV header); the ASC from csd-0 is handed over once via
  * `configure_codecs(None, Some(asc))`.
  */
@@ -42,11 +47,12 @@ class AudioRecorder {
     private var ingest: MediaIngest? = null
     private var onError: ((String) -> Unit)? = null
 
-    private val pts = StreamPts()
+    private var pts: StreamPts? = null
+    private val held = ArrayDeque<HeldAudio>()
     private val configSent = AtomicBoolean(false)
 
     /** Start capture. Fatal failures are reported via [onError] immediately. */
-    fun start(ingest: MediaIngest, onError: (String) -> Unit) {
+    fun start(ingest: MediaIngest, onError: (String) -> Unit, clock: SessionClock) {
         if (running) return
         this.ingest = ingest
         this.onError = onError
@@ -64,7 +70,8 @@ class AudioRecorder {
         record = recorder
         codec = encoder
         configSent.set(false)
-        pts.reset()
+        pts = StreamPts(clock)
+        held.clear()
         running = true
         thread = Thread({ encodeLoop() }, "stry-audio").also { it.start() }
     }
@@ -83,6 +90,8 @@ class AudioRecorder {
         codec = null
         ingest = null
         onError = null
+        pts = null
+        held.clear()
     }
 
     private fun encodeLoop() {
@@ -127,7 +136,10 @@ class AudioRecorder {
             val outIndex = codec.dequeueOutputBuffer(info, 0)
             when {
                 outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> emitConfig(codec.outputFormat)
-                outIndex < 0 -> return
+                outIndex < 0 -> {
+                    flushHeld()
+                    return
+                }
                 else -> {
                     if (info.size > 0 && info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0) {
                         val buffer = codec.getOutputBuffer(outIndex)
@@ -136,12 +148,29 @@ class AudioRecorder {
                             buffer.limit(info.offset + info.size)
                             val aac = ByteArray(info.size)
                             buffer.get(aac)
-                            ingest?.pushAudio(pts.next(info.presentationTimeUs / 1_000L), aac)
+                            hold(info.presentationTimeUs / 1_000L, aac)
                         }
                     }
                     codec.releaseOutputBuffer(outIndex, false)
                 }
             }
+        }
+    }
+
+    private fun hold(rawMs: Long, aac: ByteArray) {
+        val captureMs = if (rawMs > 0) rawMs else SystemClock.elapsedRealtimeNanos() / 1_000_000L
+        held.addLast(HeldAudio(captureMs + AUDIO_HOLDBACK_MS, aac))
+        flushHeld()
+    }
+
+    private fun flushHeld() {
+        val nowMs = SystemClock.elapsedRealtimeNanos() / 1_000_000L
+        val pts = pts ?: return
+        while (true) {
+            val head = held.peekFirst() ?: return
+            if (head.dueMs > nowMs) return
+            held.removeFirst()
+            ingest?.pushAudio(pts.next(head.dueMs), head.aac)
         }
     }
 

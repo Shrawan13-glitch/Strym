@@ -58,7 +58,7 @@ class CameraStreamer(context: Context) {
      * are reported to [onError] (from which the caller tears the broadcast
      * down).
      */
-    fun startEncoding(settings: BroadcastSettings, ingest: MediaIngest, onError: (String) -> Unit) {
+    fun startEncoding(settings: BroadcastSettings, ingest: MediaIngest, onError: (String) -> Unit, clock: SessionClock) {
         if (encoding) return
         val preset = settings.preset
         val selection = EncoderCapabilities.select(preset.width, preset.height, settings.videoBitrateBps)
@@ -69,7 +69,7 @@ class CameraStreamer(context: Context) {
         if (selection.size.width != preset.width || selection.size.height != preset.height) {
             Log.w(TAG, "preset ${preset.width}x${preset.height} clamped to ${selection.size}")
         }
-        val created = VideoEncoder(encoderListener)
+        val created = VideoEncoder(encoderListener, clock)
         // Wire the listener target before starting the encoder: its first
         // onOutputFormatChanged (SPS/PPS config) can fire as soon as start()
         // returns, and must not be dropped because ingest was still null.

@@ -107,9 +107,10 @@ class StreamService : LifecycleService() {
                 buildNotification(StreamPhase.CONNECTING),
                 types,
             )
-            camera.startEncoding(settings, controller, ::captureFailed)
+            val clock = SessionClock()
+            camera.startEncoding(settings, controller, ::captureFailed, clock)
             if (settings.audioEnabled) {
-                audio.start(controller, ::captureFailed)
+                audio.start(controller, ::captureFailed, clock)
             }
         }
     }

@@ -34,7 +34,7 @@ class VideoEncoderException(message: String, cause: Throwable? = null) : Excepti
  * touches the camera or main threads. Low latency by construction: CBR, 2 s
  * IDR interval, no B-frames.
  */
-class VideoEncoder(private val listener: Listener) {
+class VideoEncoder(private val listener: Listener, private val clock: SessionClock) {
 
     interface Listener {
         fun onCodecConfig(avcDecoderConfig: ByteArray)
@@ -97,7 +97,7 @@ class VideoEncoder(private val listener: Listener) {
             codec = created
             surface = input
             thread = worker
-            pts = VideoPts(config.framerate.toDouble())
+            pts = VideoPts(config.framerate.toDouble(), clock)
             codecConfigSent.set(false)
             broken = false
         } catch (e: RuntimeException) {
