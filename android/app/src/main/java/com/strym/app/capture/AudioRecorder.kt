@@ -18,7 +18,7 @@ private const val SAMPLE_RATE_HZ = 48_000
 private const val BITRATE_BPS = 128_000
 private const val DEQUEUE_TIMEOUT_US = 10_000L
 private const val MAX_INPUT_SIZE = 8_192
-private const val AUDIO_HOLDBACK_MS = 270L
+private const val AUDIO_HOLDBACK_MS = 80L
 
 private data class HeldAudio(val captureMs: Long, val dueMs: Long, val aac: ByteArray)
 
@@ -29,13 +29,15 @@ private data class HeldAudio(val captureMs: Long, val dueMs: Long, val aac: Byte
  * mono but the FLV tag the core emits is stereo) feeds a byte-buffer
  * MediaCodec AAC-LC encoder. Each read is stamped with the monotonic wall
  * clock at capture time, so the emitted dts *is* the capture wall time minus
- * the shared [SessionClock.originMs] — the same base the video track uses.
- * [AUDIO_HOLDBACK_MS] only paces when frames are handed to the core (so the
- * stream starts with video and audio lands on the wire evenly); it does not
- * shift the timestamps, which is what let audio's dts drift behind video and
- * trip the core's rebase. Raw AAC frames go out (no ADTS — the core owns the
- * FLV header); the ASC from csd-0 is handed over once via
- * `configure_codecs(None, Some(asc))`.
+ * the shared [SessionClock.originMs] — the same base the video track uses
+ * (video runs off the wall-synced camera clock). [AUDIO_HOLDBACK_MS] only
+ * paces when frames reach the core, tuned to video's steady-state
+ * capture→output latency (~100 ms, minus audio's own capture→flush overhead)
+ * so both tracks arrive at the muxer carrying the same dts "age" — the old
+ * 270 ms value reflected the video warm-up delay that no longer exists and
+ * left audio's dts ~200 ms behind video, tripping the core's rebase. Raw AAC
+ * frames go out (no ADTS — the core owns the FLV header); the ASC from csd-0
+ * is handed over once via `configure_codecs(None, Some(asc))`.
  */
 class AudioRecorder {
 
