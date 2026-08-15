@@ -20,19 +20,20 @@ private const val DEQUEUE_TIMEOUT_US = 10_000L
 private const val MAX_INPUT_SIZE = 8_192
 private const val AUDIO_HOLDBACK_MS = 270L
 
-private data class HeldAudio(val dueMs: Long, val aac: ByteArray)
+private data class HeldAudio(val captureMs: Long, val dueMs: Long, val aac: ByteArray)
 
 /**
  * Microphone → AAC encoder → session, the audio half of [MediaIngest].
  *
  * [AudioRecord] (48 kHz PCM16, stereo with a mono fallback — phone mics are
  * mono but the FLV tag the core emits is stereo) feeds a byte-buffer
- * MediaCodec AAC-LC encoder. Each read is stamped with the monotonic clock at
- * capture time, then the encoder's output is delayed by [AUDIO_HOLDBACK_MS] so
- * audio lands on the wire alongside video — video's pipeline (~130 ms) runs
- * far behind audio's (~20 ms), which is what let audio's dts race ahead and
- * trip the core's rebase. Both tracks rebase onto the same
- * [SessionClock.originMs]. Raw AAC frames go out (no ADTS — the core owns the
+ * MediaCodec AAC-LC encoder. Each read is stamped with the monotonic wall
+ * clock at capture time, so the emitted dts *is* the capture wall time minus
+ * the shared [SessionClock.originMs] — the same base the video track uses.
+ * [AUDIO_HOLDBACK_MS] only paces when frames are handed to the core (so the
+ * stream starts with video and audio lands on the wire evenly); it does not
+ * shift the timestamps, which is what let audio's dts drift behind video and
+ * trip the core's rebase. Raw AAC frames go out (no ADTS — the core owns the
  * FLV header); the ASC from csd-0 is handed over once via
  * `configure_codecs(None, Some(asc))`.
  */
@@ -192,27 +193,24 @@ class AudioRecorder {
     private fun hold(rawUs: Long, aac: ByteArray) {
         val captureMs = if (rawUs > 0) rawUs / 1_000L
         else SystemClock.elapsedRealtimeNanos() / 1_000_000L
-        held.addLast(HeldAudio(captureMs + AUDIO_HOLDBACK_MS, aac))
+        held.addLast(HeldAudio(captureMs, captureMs + AUDIO_HOLDBACK_MS, aac))
         flushHeld()
     }
 
     private fun flushHeld() {
         val nowMs = SystemClock.elapsedRealtimeNanos() / 1_000_000L
         val pts = pts ?: return
-        val maxDue = held.lastOrNull()?.dueMs ?: return
         while (true) {
             val head = held.peekFirst() ?: return
             if (head.dueMs > nowMs) return
             held.removeFirst()
-            // Anchor the newest flushed frame to its delivery (flush) wall time,
-            // the same base video uses: video dts is delivery-anchored (its
-            // first-frame anchor is set at delivery), so audio must be too, or
-            // the video pipeline latency shows up as a constant offset and
-            // trips the core's rebase. Frames released together keep their
-            // sample-spaced separation around that anchor.
-            val dts = pts.next(nowMs + (head.dueMs - maxDue))
+            // dts is the frame's capture wall time minus the shared origin —
+            // the same base video uses, so the core never sees a constant
+            // cross-track offset and stops rebasing. The holdback above only
+            // paces delivery.
+            val dts = pts.next(head.captureMs)
             if (audioLog++ % 25 == 0) {
-                Log.d(TAG, "AUDIO dts=$dts due=${head.dueMs} wall=$nowMs")
+                Log.d(TAG, "AUDIO dts=$dts capture=${head.captureMs} wall=$nowMs")
             }
             ingest?.pushAudio(dts, head.aac)
         }

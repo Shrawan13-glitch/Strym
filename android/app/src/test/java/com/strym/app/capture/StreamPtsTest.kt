@@ -6,7 +6,7 @@ import org.junit.Test
 class StreamPtsTest {
 
     // SystemClock is unmocked in local unit tests (returns 0), so originMs is 0
-    // and the rebased dts equals the raw delivery wall ms.
+    // and the rebased dts equals the raw capture wall ms.
 
     @Test
     fun dtsIsDeliveryWallTimeMinusSharedOrigin() {

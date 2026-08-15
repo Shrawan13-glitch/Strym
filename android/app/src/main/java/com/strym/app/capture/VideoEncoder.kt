@@ -8,6 +8,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
 import java.util.concurrent.atomic.AtomicBoolean
@@ -97,7 +98,7 @@ class VideoEncoder(private val listener: Listener, private val clock: SessionClo
             codec = created
             surface = input
             thread = worker
-            pts = VideoPts(config.framerate.toDouble(), clock)
+            pts = VideoPts(clock)
             codecConfigSent.set(false)
             broken = false
         } catch (e: RuntimeException) {
@@ -191,7 +192,8 @@ class VideoEncoder(private val listener: Listener, private val clock: SessionClo
                 }
                 val tracker = pts ?: return
                 val isKeyframe = info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0
-                listener.onFrame(tracker.next(info.presentationTimeUs), isKeyframe, working.copyOf(info.size))
+                val wallMs = SystemClock.elapsedRealtimeNanos() / 1_000_000L
+                listener.onFrame(tracker.next(info.presentationTimeUs, wallMs), isKeyframe, working.copyOf(info.size))
             } catch (e: RuntimeException) {
                 Log.e(TAG, "encoder output handling failed size=${info.size} head=${working.hexPrefix(8)}", e)
                 fail("encoder output handling failed: ${e.message}")
