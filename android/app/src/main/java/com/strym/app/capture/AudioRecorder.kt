@@ -6,6 +6,7 @@ import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.media.MediaRecorder
+import android.os.Process
 import android.os.SystemClock
 import android.util.Log
 import java.util.ArrayDeque
@@ -99,6 +100,12 @@ class AudioRecorder {
     }
 
     private fun encodeLoop() {
+        // Field logs (CPH2613) showed this thread freezing 1-3 s at a time at
+        // default priority: the scheduler starved it behind rendering, camera
+        // callbacks and the video encoder, and each freeze burst stale audio
+        // into the core. Urgent-audio priority is what a capture thread is
+        // supposed to run at; failure to set it must never kill capture.
+        runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO) }
         val codec = codec ?: return
         val record = record ?: return
         try {

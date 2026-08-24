@@ -11,7 +11,7 @@ name = "stream_ffi"
 crate-type = ["cdylib"]
 
 [dependencies]
-stream-ffi = { git = "https://github.com/Shrawan13-glitch/strym-core.git", rev = "f45836e" }
+stream-ffi = { git = "https://github.com/Shrawan13-glitch/strym-core.git", rev = "8de4874" }
 # Bindgen must match the pinned core's uniffi major/minor exactly. Kept as a
 # regular dependency (the core's ffi crate does the same) so `cargo build`
 # compiles the bin target.
@@ -20,7 +20,7 @@ uniffi = { version = "=0.32", features = ["cli"] }
 # Direct dep on the core for the ingest-server example (the FFI facade doesn't
 # expose the ingest side). Same pinned rev.
 [dev-dependencies]
-stream = { git = "https://github.com/Shrawan13-glitch/strym-core.git", rev = "f45836e" }
+stream = { git = "https://github.com/Shrawan13-glitch/strym-core.git", rev = "8de4874" }
 
 [[bin]]
 name = "uniffi-bindgen"
