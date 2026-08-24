@@ -6,9 +6,16 @@ import android.util.Log
 import android.util.Size
 import android.view.Surface
 import com.strym.app.settings.BroadcastSettings
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 private const val TAG = "StrymCameraStreamer"
 private const val PREVIEW_ASPECT = 16f / 9f
+
+/** Video is considered stalled when no encoded frame arrived for this long. */
+private const val VIDEO_STALE_MS = 2_000L
+/** Heartbeat cadence while video is stalled: one cached IDR per second. */
+private const val HEARTBEAT_INTERVAL_MS = 1_000L
 
 /**
  * Coordinates camera → encoder → session over raw Camera2 ([CameraController]).
@@ -35,6 +42,34 @@ class CameraStreamer(context: Context) {
     private var onError: ((String) -> Unit)? = null
     private var encoding = false
     private var videoLog = 0
+
+    // --- video heartbeat (Larix-style pause mode) ---------------------------
+    // The ingest must never go silent: servers drop idle publishers, and a
+    // silent video track is what leaves viewers on an endless spinner. While
+    // real frames flow this costs nothing; the moment they stop (camera held
+    // by the lock screen, OEM privacy pause, encoder stall) the heartbeat
+    // re-sends the last cached keyframe at 1 fps so the connection stays
+    // healthy and viewers see a frozen frame instead of a dead stream.
+    private val heartbeat = Executors.newSingleThreadScheduledExecutor { runnable ->
+        Thread(runnable, "stry-heartbeat").apply {
+            priority = Thread.MIN_PRIORITY + 1
+            isDaemon = true
+        }
+    }
+
+    @Volatile
+    private var lastFrameWallMs = 0L
+
+    @Volatile
+    private var lastPushedDtsMs = -1L
+
+    @Volatile
+    private var lastKeyframe: ByteArray? = null
+
+    @Volatile
+    private var clock: SessionClock? = null
+
+    private var lastHeartbeatWallMs = 0L
 
     /** A supported viewfinder size near the 16:9 encoder aspect. */
     fun choosePreviewSize(): Size? = controller.choosePreviewSize(PREVIEW_ASPECT)
@@ -99,6 +134,9 @@ class CameraStreamer(context: Context) {
             return
         }
         encoding = true
+        this.clock = clock
+        lastFrameWallMs = SystemClock.elapsedRealtimeNanos() / 1_000_000L
+        startHeartbeat()
         reconfigure()
     }
 
@@ -119,6 +157,38 @@ class CameraStreamer(context: Context) {
         reconfigure { stale?.stop() }
     }
 
+    private fun startHeartbeat() {
+        heartbeat.scheduleWithFixedDelay(
+            {
+                try {
+                    pumpHeartbeat()
+                } catch (t: Throwable) {
+                    Log.w(TAG, "heartbeat pass failed", t)
+                }
+            },
+            HEARTBEAT_INTERVAL_MS,
+            500,
+            TimeUnit.MILLISECONDS,
+        )
+    }
+
+    /** One heartbeat pass: push a cached IDR when real video has gone quiet. */
+    private fun pumpHeartbeat() {
+        if (!encoding) return
+        val sink = ingest ?: return
+        val keyframe = lastKeyframe ?: return
+        val nowMs = SystemClock.elapsedRealtimeNanos() / 1_000_000L
+        if (nowMs - lastFrameWallMs < VIDEO_STALE_MS) return
+        if (nowMs - lastHeartbeatWallMs < HEARTBEAT_INTERVAL_MS) return
+        lastHeartbeatWallMs = nowMs
+        // Same wall-clock base the live track uses, clamped forward so the
+        // heartbeat can never move the track's dts backwards.
+        val origin = clock?.originMs ?: return
+        val dtsMs = maxOf(nowMs - origin, lastPushedDtsMs + 1)
+        Log.w(TAG, "video stale ${nowMs - lastFrameWallMs}ms; pushing IDR heartbeat dts=$dtsMs")
+        sink.pushVideo(dtsMs, true, keyframe)
+    }
+
     /** Request an IDR so viewers resync promptly after a reconnect. */
     fun requestKeyframe() {
         encoder?.requestKeyframe()
@@ -126,6 +196,7 @@ class CameraStreamer(context: Context) {
 
     /** Release the camera; safe after teardown. */
     fun close() {
+        heartbeat.shutdownNow()
         encoder?.stop()
         encoder = null
         encoderSize = null
@@ -141,12 +212,22 @@ class CameraStreamer(context: Context) {
             if (videoLog++ % 30 == 0) {
                 Log.d(TAG, "VIDEO dts=$ptsMs wall=${SystemClock.elapsedRealtimeNanos() / 1_000_000L}")
             }
+            lastFrameWallMs = SystemClock.elapsedRealtimeNanos() / 1_000_000L
+            if (ptsMs > lastPushedDtsMs) lastPushedDtsMs = ptsMs
+            if (isKeyframe) {
+                // Cheap enough at one IDR per 2 s, and it is what the
+                // heartbeat re-sends when the camera disappears.
+                lastKeyframe = annexB.copyOf()
+            }
             ingest?.pushVideo(ptsMs, isKeyframe, annexB)
         }
 
         override fun onError(message: String) {
-            Log.e(TAG, message)
-            onError?.invoke(message)
+            // Video problems are no longer fatal to the broadcast: the camera
+            // controller recovers on its own and the heartbeat holds the
+            // ingest in the meantime. Stopping the whole stream because one
+            // leg hiccupped is exactly the behavior we are engineering out.
+            Log.e(TAG, "(non-fatal) $message")
         }
     }
 

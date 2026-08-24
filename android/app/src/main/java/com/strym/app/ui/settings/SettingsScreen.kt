@@ -1,5 +1,10 @@
 package com.strym.app.ui.settings
 
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.os.PowerManager
+import android.provider.Settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -37,6 +42,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -201,6 +207,8 @@ fun SettingsScreen(
                 )
             }
 
+            BatteryOptimizationRow()
+
             Button(
                 onClick = { onChange(draft) },
                 enabled = draft != settings,
@@ -240,3 +248,52 @@ private val LATENCY_OPTIONS = listOf(
     LatencyMode.BALANCED to R.string.settings_latency_balanced,
     LatencyMode.LENIENT to R.string.settings_latency_lenient,
 )
+
+/**
+ * Battery-optimization exemption. Without it, Doze and OEM power managers
+ * suspend network access for backgrounded apps — the #1 killer of long mobile
+ * broadcasts. The row reflects system state live (re-checked on each entry
+ * into the composition) and deep-links into the system allowlist dialog.
+ */
+@Composable
+private fun BatteryOptimizationRow() {
+    val context = LocalContext.current
+    val powerManager = remember(context) {
+        context.getSystemService(Context.POWER_SERVICE) as PowerManager
+    }
+    // `remember` without keys re-evaluates whenever the screen recomposes on
+    // return from the system dialog, which is exactly the refresh we want.
+    val exempt = remember { powerManager.isIgnoringBatteryOptimizations(context.packageName) }
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = stringResource(R.string.settings_battery_title),
+                style = MaterialTheme.typography.titleSmall,
+            )
+            Text(
+                text = stringResource(
+                    if (exempt) R.string.settings_battery_summary_on
+                    else R.string.settings_battery_summary_off,
+                ),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Switch(
+            checked = exempt,
+            onCheckedChange = { wanted ->
+                if (wanted && !powerManager.isIgnoringBatteryOptimizations(context.packageName)) {
+                    context.startActivity(
+                        Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                            data = Uri.parse("package:${context.packageName}")
+                        },
+                    )
+                }
+            },
+        )
+    }
+}

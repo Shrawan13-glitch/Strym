@@ -54,6 +54,12 @@
     <!-- Notification -->
     <string name="notification_channel_streaming">Live streaming</string>
     <string name="notification_streaming_title">Strym</string>
+    <string name="notification_resume_title">Broadcast interrupted</string>
+    <string name="notification_resume_text">Tap to go back live with your saved settings.</string>
+    <string name="notification_resume_action">Resume broadcast</string>
+    <string name="settings_battery_title">Unrestricted battery use</string>
+    <string name="settings_battery_summary_on">Enabled — Android won\u2019t throttle streaming in the background.</string>
+    <string name="settings_battery_summary_off">Recommended. Without it, Android may pause the stream when the app is backgrounded.</string>
 
     <!-- Error taxonomy (mirrors the core's StreamError variants) -->
     <string name="error_invalid_config">Stream settings rejected: %1$s</string>

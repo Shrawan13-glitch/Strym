@@ -16,6 +16,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -48,6 +51,12 @@ fun StrymRoot() {
             Manifest.permission.RECORD_AUDIO,
         ),
     ) {
+        // Keyframe discipline on foreground return: while the app was behind
+        // the control center / floating window / app switcher, video may have
+        // stalled or recovered from a reconnect. A fresh IDR on resume means
+        // viewers resync immediately instead of staring at a spinner.
+        LifecycleKeyframeRefresher(service)
+
         val navController = rememberNavController()
         Scaffold { padding ->
             NavHost(
@@ -83,6 +92,21 @@ private fun streamingState(service: StreamService?): UiState {
     val fallback = remember { MutableStateFlow(UiState()) }
     val state by (service?.controller?.uiState ?: fallback).collectAsState()
     return state
+}
+
+/** Requests a sync frame every time the app returns to the foreground. */
+@Composable
+private fun LifecycleKeyframeRefresher(service: StreamService?) {
+    val lifecycle = LocalLifecycleOwner.current
+    DisposableEffect(lifecycle, service) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                service?.camera?.requestKeyframe()
+            }
+        }
+        lifecycle.addObserver(observer)
+        onDispose { lifecycle.removeObserver(observer) }
+    }
 }
 
 /**

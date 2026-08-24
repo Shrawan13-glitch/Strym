@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.mutablePreferencesOf
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import uniffi.stream_ffi.LatencyMode
 
@@ -32,6 +33,9 @@ class SettingsRepository(context: Context) {
     private val dataStore = context.applicationContext.settingsDataStore
 
     val settings: Flow<BroadcastSettings> = dataStore.data.map(::read)
+
+    /** The persisted settings, awaited once (service resume path). */
+    suspend fun current(): BroadcastSettings = dataStore.data.map(::read).first()
 
     suspend fun update(transform: (BroadcastSettings) -> BroadcastSettings) {
         dataStore.updateData { prefs ->

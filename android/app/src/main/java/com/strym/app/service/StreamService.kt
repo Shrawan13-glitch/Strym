@@ -2,11 +2,14 @@ package com.strym.app.service
 
 import android.app.Notification
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.wifi.WifiManager
 import android.os.Binder
+import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
@@ -21,6 +24,7 @@ import com.strym.app.session.RealSessionFactory
 import com.strym.app.session.StreamController
 import com.strym.app.session.StreamPhase
 import com.strym.app.settings.BroadcastSettings
+import com.strym.app.settings.SettingsRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -54,6 +58,7 @@ class StreamService : LifecycleService() {
         private set
 
     private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
 
     inner class LocalBinder : Binder() {
         fun service(): StreamService = this@StreamService
@@ -68,18 +73,71 @@ class StreamService : LifecycleService() {
         camera = CameraStreamer(this)
         audio = AudioRecorder()
         scope.launch {
+            var previous: StreamPhase? = null
             controller.uiState.collect { state ->
                 if (state.hasSession) {
                     getSystemService(NotificationManager::class.java)
                         .notify(NOTIFICATION_ID, buildNotification(state.phase))
                 }
-                if (state.phase == StreamPhase.RECONNECTING) {
-                    // Keyframe discipline: cut to a fresh IDR so the viewer
-                    // resyncs promptly once the connection returns.
-                    camera.requestKeyframe()
+                // Keyframe discipline on every recovery edge: a fresh IDR is
+                // what turns "reconnected" into viewers actually seeing video.
+                when (state.phase) {
+                    StreamPhase.RECONNECTING -> camera.requestKeyframe()
+                    StreamPhase.LIVE ->
+                        if (previous == StreamPhase.RECONNECTING) camera.requestKeyframe()
+                    else -> {}
                 }
+                previous = state.phase
             }
         }
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Resume path after the process was swiped away mid-broadcast:
+        // Android 14+ forbids restarting a camera FGS from the background,
+        // so the user taps the notification (a foreground start) and we pick
+        // up from persisted settings.
+        if (intent?.getBooleanExtra(EXTRA_RESUME, false) == true &&
+            !controller.uiState.value.hasSession
+        ) {
+            scope.launch {
+                val settings = SettingsRepository(applicationContext).current()
+                goLive(settings)
+            }
+        }
+        return super.onStartCommand(intent, flags, startId)
+    }
+
+    /**
+     * The task was swiped out of recents while live. The process (and with it
+     * the session) dies moments later; post a persistent, high-visibility
+     * notification so one tap restores the broadcast. The notification
+     * outlives the process — it is system-managed.
+     */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        val state = controller.uiState.value
+        if (state.hasSession && state.phase in LIVE_PHASES) {
+            val resume = PendingIntent.getService(
+                this,
+                0,
+                Intent(this, StreamService::class.java).putExtra(EXTRA_RESUME, true),
+                PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            getSystemService(NotificationManager::class.java).notify(
+                RESUME_NOTIFICATION_ID,
+                NotificationCompat.Builder(this, CHANNEL_STREAMING)
+                    .setSmallIcon(R.drawable.ic_stream)
+                    .setContentTitle(getString(R.string.notification_resume_title))
+                    .setContentText(getString(R.string.notification_resume_text))
+                    .setPriority(NotificationCompat.PRIORITY_HIGH)
+                    .setCategory(NotificationCompat.CATEGORY_SERVICE)
+                    .setOngoing(false)
+                    .addAction(0, getString(R.string.notification_resume_action), resume)
+                    .setContentIntent(resume)
+                    .build(),
+            )
+        }
+        super.onTaskRemoved(rootIntent)
     }
 
     override fun onBind(intent: Intent): IBinder {
@@ -118,6 +176,7 @@ class StreamService : LifecycleService() {
                 audio.start(controller, ::captureFailed, clock)
             }
             acquireWakeLock()
+            acquireWifiLock()
         }
     }
 
@@ -138,6 +197,35 @@ class StreamService : LifecycleService() {
         wakeLock = null
     }
 
+    /**
+     * Keep the Wi-Fi radio out of power-save while live. `LOW_LATENCY` is the
+     * only non-deprecated mode and is documented as screen-on/foreground —
+     * exactly the states (control center, floating window, app switcher)
+     * where streams used to stall. With the screen fully off the radio may
+     * still sleep; the core's liveness watchdog then redials us.
+     */
+    private fun acquireWifiLock() {
+        if (wifiLock?.isHeld == true) return
+        val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        val mode = if (Build.VERSION.SDK_INT >= 29) {
+            WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+        } else {
+            @Suppress("DEPRECATION")
+            WifiManager.WIFI_MODE_FULL_HIGH_PERF
+        }
+        wifiLock = wm.createWifiLock(mode, "strym:wifi").also {
+            it.setReferenceCounted(false)
+            it.acquire()
+        }
+    }
+
+    private fun releaseWifiLock() {
+        wifiLock?.let {
+            if (it.isHeld) it.release()
+        }
+        wifiLock = null
+    }
+
     /** Stop the session, leave the foreground, and release the start. */
     fun endBroadcast() {
         scope.launch { teardown() }
@@ -147,6 +235,7 @@ class StreamService : LifecycleService() {
         camera.close()
         audio.stop()
         releaseWakeLock()
+        releaseWifiLock()
         scope.cancel()
         super.onDestroy()
     }
@@ -156,6 +245,7 @@ class StreamService : LifecycleService() {
         audio.stop()
         controller.stopSession()
         releaseWakeLock()
+        releaseWifiLock()
         ServiceCompat.stopForeground(this@StreamService, ServiceCompat.STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -190,5 +280,10 @@ class StreamService : LifecycleService() {
     companion object {
         const val CHANNEL_STREAMING = "streaming"
         const val NOTIFICATION_ID = 1
+        const val RESUME_NOTIFICATION_ID = 2
+        const val EXTRA_RESUME = "resume"
+
+        /** Phases in which the broadcast is (or should soon be) on the wire. */
+        private val LIVE_PHASES = setOf(StreamPhase.CONNECTING, StreamPhase.LIVE, StreamPhase.RECONNECTING)
     }
 }

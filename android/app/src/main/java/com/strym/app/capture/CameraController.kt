@@ -22,6 +22,12 @@ private const val TAG = "StrymCamera"
 private const val MAX_SESSION_FAILURES = 3
 private const val PREVIEW_MAX_WIDTH = 1920
 
+/** Bounded camera-reopen policy: some OEMs (and lock screens) drop the
+ *  camera device mid-stream; the stream must survive by re-opening instead of
+ *  tearing the broadcast down. */
+private const val MAX_REOPEN_ATTEMPTS = 5
+private const val REOPEN_BASE_DELAY_MS = 300L
+
 /**
  * Raw Camera2 capture-session manager for the dual-surface path.
  *
@@ -52,6 +58,12 @@ class CameraController(private val context: Context) {
     private var creating = false
     private var dirty = false
     private var consecutiveFailures = 0
+
+    /** Reopen attempts since the last successful session configuration. */
+    private var reopenAttempts = 0
+
+    /** True while a delayed reopen is queued on [cameraHandler]. */
+    private var reopenPending = false
 
     @Volatile
     private var preview: Surface? = null
@@ -165,8 +177,40 @@ class CameraController(private val context: Context) {
         } catch (e: SecurityException) {
             notifyError("The camera permission was revoked")
         } catch (e: CameraAccessException) {
-            notifyError("Could not open the camera: ${e.message}")
+            // Transiently held cameras (another app, an OEM privacy lock while
+            // the screen turns off) surface here; recover like a disconnect.
+            if (!scheduleReopen("Could not open the camera (${e.message})")) {
+                notifyError("Could not open the camera: ${e.message}")
+            }
         }
+    }
+
+    /**
+     * Queue a bounded, backed-off reopen of the camera. Returns false when
+     * recovery does not apply (nothing wants the camera, or the retry budget
+     * is exhausted and the caller must surface the failure). The stream keeps
+     * running meanwhile — [CameraStreamer]'s heartbeat holds the ingest.
+     */
+    private fun scheduleReopen(why: String): Boolean {
+        if (preview == null && encoder == null) return false
+        if (reopenAttempts >= MAX_REOPEN_ATTEMPTS) {
+            reopenAttempts = 0
+            return false
+        }
+        if (reopenPending) return true
+        reopenPending = true
+        val delay = REOPEN_BASE_DELAY_MS shl reopenAttempts.coerceAtMost(4)
+        reopenAttempts++
+        Log.w(TAG, "$why; reopening in ${delay}ms (attempt $reopenAttempts/$MAX_REOPEN_ATTEMPTS)")
+        cameraHandler.postDelayed(
+            {
+                reopenPending = false
+                dirty = true
+                applySurfaces()
+            },
+            delay,
+        )
+        return true
     }
 
     private val cameraCallback = object : CameraDevice.StateCallback() {
@@ -178,13 +222,19 @@ class CameraController(private val context: Context) {
         override fun onDisconnected(device: CameraDevice) {
             camera = null
             runCatching { device.close() }
-            notifyError("The camera disconnected")
+            // Lock screens and OEM power managers drop the device mid-stream;
+            // that is a pause to survive, not a reason to end the broadcast.
+            if (!scheduleReopen("The camera disconnected")) {
+                notifyError("The camera disconnected")
+            }
         }
 
         override fun onError(device: CameraDevice, error: Int) {
             camera = null
             runCatching { device.close() }
-            notifyError("Camera error $error")
+            if (!scheduleReopen("Camera error $error")) {
+                notifyError("Camera error $error")
+            }
         }
     }
 
@@ -227,6 +277,7 @@ class CameraController(private val context: Context) {
         override fun onConfigured(capturing: CameraCaptureSession) {
             creating = false
             consecutiveFailures = 0
+            reopenAttempts = 0
             session = capturing
             startRepeating(capturing)
             applySurfaces()
