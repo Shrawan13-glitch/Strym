@@ -260,9 +260,6 @@ private val LATENCY_OPTIONS = listOf(
 @Composable
 private fun BatteryOptimizationRow() {
     val context = LocalContext.current
-    val powerManager = remember(context) {
-        context.getSystemService(Context.POWER_SERVICE) as PowerManager
-    }
     var exempt by remember { mutableStateOf(BatteryPrompt.isExempt(context)) }
     val owner = LocalLifecycleOwner.current
     DisposableEffect(owner) {
