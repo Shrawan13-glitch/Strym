@@ -97,15 +97,15 @@ private fun streamingState(service: StreamService?): UiState {
 /** Requests a sync frame every time the app returns to the foreground. */
 @Composable
 private fun LifecycleKeyframeRefresher(service: StreamService?) {
-    val lifecycle = LocalLifecycleOwner.current
-    DisposableEffect(lifecycle, service) {
+    val owner = LocalLifecycleOwner.current
+    DisposableEffect(owner, service) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 service?.camera?.requestKeyframe()
             }
         }
-        lifecycle.addObserver(observer)
-        onDispose { lifecycle.removeObserver(observer) }
+        owner.lifecycle.addObserver(observer)
+        onDispose { owner.lifecycle.removeObserver(observer) }
     }
 }
 
