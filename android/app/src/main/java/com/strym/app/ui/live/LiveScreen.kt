@@ -56,6 +56,7 @@ import com.strym.app.session.StatsSnapshot
 import com.strym.app.session.StreamPhase
 import com.strym.app.session.UiState
 import com.strym.app.settings.BroadcastSettings
+import com.strym.app.settings.BatteryPrompt
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 
@@ -76,6 +77,11 @@ fun LiveScreen(
     val notificationLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { /* granted or not — the stream works either way */ }
+
+    // Same spirit for the battery-optimization exemption: explained once,
+    // in plain language, right before the first broadcast. Either answer
+    // proceeds to go live; the settings row remains for anyone who skips.
+    var showBatteryDialog by remember { mutableStateOf(false) }
 
     Box(Modifier.fillMaxSize()) {
         CameraPreview(service, Modifier.fillMaxSize())
@@ -131,13 +137,63 @@ fun LiveScreen(
                     ) {
                         notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                     }
-                    service?.goLive(settings)
+                    if (BatteryPrompt.isExempt(context) || BatteryPrompt.wasAsked(context)) {
+                        service?.goLive(settings)
+                    } else {
+                        // First broadcast: explain the exemption once, then go
+                        // live either way.
+                        showBatteryDialog = true
+                    }
                 },
                 onStop = { service?.endBroadcast() },
                 onRetry = { scope.launch { controller?.retry() } },
             )
         }
     }
+
+    if (showBatteryDialog) {
+        BatteryExemptionDialog(
+            onAllow = {
+                showBatteryDialog = false
+                BatteryPrompt.markAsked(context)
+                context.startActivity(BatteryPrompt.requestIntent(context))
+                service?.goLive(settings)
+            },
+            onNotNow = {
+                showBatteryDialog = false
+                BatteryPrompt.markAsked(context)
+                service?.goLive(settings)
+            },
+            onDismissed = { showBatteryDialog = false },
+        )
+    }
+}
+
+/**
+ * Plain-language pre-prompt before the system's battery allowlist dialog —
+ * what Play review expects for this permission, and what makes the choice an
+ * informed one. Both answers proceed to go live; backing out of the dialog
+ * skips the broadcast and leaves the prompt un-asked so we try again next time.
+ */
+@Composable
+private fun BatteryExemptionDialog(
+    onAllow: () -> Unit,
+    onNotNow: () -> Unit,
+    onDismissed: () -> Unit,
+) {
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismissed,
+        title = { Text(stringResource(R.string.battery_dialog_title)) },
+        text = { Text(stringResource(R.string.battery_dialog_body)) },
+        confirmButton = {
+            Button(onClick = onAllow) { Text(stringResource(R.string.battery_dialog_allow)) }
+        },
+        dismissButton = {
+            OutlinedButton(onClick = onNotNow) {
+                Text(stringResource(R.string.battery_dialog_not_now))
+            }
+        },
+    )
 }
 
 @Composable

@@ -1,10 +1,6 @@
 package com.strym.app.ui.settings
 
 import android.content.Context
-import android.content.Intent
-import android.net.Uri
-import android.os.PowerManager
-import android.provider.Settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -35,6 +31,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -48,8 +45,12 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.strym.app.R
 import com.strym.app.settings.BroadcastSettings
+import com.strym.app.settings.BatteryPrompt
 import com.strym.app.settings.VideoPreset
 import com.strym.app.ui.live.formatBitrate
 import uniffi.stream_ffi.LatencyMode
@@ -252,8 +253,9 @@ private val LATENCY_OPTIONS = listOf(
 /**
  * Battery-optimization exemption. Without it, Doze and OEM power managers
  * suspend network access for backgrounded apps — the #1 killer of long mobile
- * broadcasts. The row reflects system state live (re-checked on each entry
- * into the composition) and deep-links into the system allowlist dialog.
+ * broadcasts. The row reflects system state, re-checked every time the screen
+ * resumes (i.e. right after returning from the system dialog), and
+ * deep-links into the allowlist prompt.
  */
 @Composable
 private fun BatteryOptimizationRow() {
@@ -261,9 +263,17 @@ private fun BatteryOptimizationRow() {
     val powerManager = remember(context) {
         context.getSystemService(Context.POWER_SERVICE) as PowerManager
     }
-    // `remember` without keys re-evaluates whenever the screen recomposes on
-    // return from the system dialog, which is exactly the refresh we want.
-    val exempt = remember { powerManager.isIgnoringBatteryOptimizations(context.packageName) }
+    var exempt by remember { mutableStateOf(BatteryPrompt.isExempt(context)) }
+    val owner = LocalLifecycleOwner.current
+    DisposableEffect(owner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                exempt = BatteryPrompt.isExempt(context)
+            }
+        }
+        owner.lifecycle.addObserver(observer)
+        onDispose { owner.lifecycle.removeObserver(observer) }
+    }
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -286,12 +296,8 @@ private fun BatteryOptimizationRow() {
         Switch(
             checked = exempt,
             onCheckedChange = { wanted ->
-                if (wanted && !powerManager.isIgnoringBatteryOptimizations(context.packageName)) {
-                    context.startActivity(
-                        Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                            data = Uri.parse("package:${context.packageName}")
-                        },
-                    )
+                if (wanted && !BatteryPrompt.isExempt(context)) {
+                    context.startActivity(BatteryPrompt.requestIntent(context))
                 }
             },
         )

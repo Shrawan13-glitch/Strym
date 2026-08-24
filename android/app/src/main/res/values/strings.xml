@@ -60,6 +60,10 @@
     <string name="settings_battery_title">Unrestricted battery use</string>
     <string name="settings_battery_summary_on">Enabled — Android won\u2019t throttle streaming in the background.</string>
     <string name="settings_battery_summary_off">Recommended. Without it, Android may pause the stream when the app is backgrounded.</string>
+    <string name="battery_dialog_title">Keep streaming in the background?</string>
+    <string name="battery_dialog_body">Android restricts background apps to save battery, which can pause your broadcast when you open the control center, switch apps, or lock the screen. Allow unrestricted battery use so Strym can keep streaming?</string>
+    <string name="battery_dialog_allow">Allow</string>
+    <string name="battery_dialog_not_now">Not now</string>
 
     <!-- Error taxonomy (mirrors the core's StreamError variants) -->
     <string name="error_invalid_config">Stream settings rejected: %1$s</string>
