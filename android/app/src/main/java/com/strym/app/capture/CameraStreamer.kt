@@ -187,11 +187,11 @@ class CameraStreamer(context: Context) {
         cameraStarted = true
         // One sensor-native landscape buffer feeds everything downstream;
         // each render target crops/scales it independently on the GPU.
-        val size = controller.chooseOutputSize(16f / 9f) ?: run {
-            Log.w(TAG, "no camera output sizes; falling back to 1280x720")
-            1280 to 720
-        }
-        gl.start(size.first, size.second) { surface ->
+        val size = controller.chooseOutputSize(16f / 9f)
+        val width = size?.width ?: 1280
+        val height = size?.height ?: 720
+        if (size == null) Log.w(TAG, "no camera output sizes; falling back to ${width}x${height}")
+        gl.start(width, height) { surface ->
             cameraSurface = surface
             controller.configure(surface) { message -> reportCaptureError(message) }
         }

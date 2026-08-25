@@ -328,9 +328,9 @@ private fun StatCell(label: String, value: String) {
 @Composable
 fun CameraPreview(service: StreamService?, modifier: Modifier = Modifier) {
     val context = LocalContext.current
+    val surfaceView = remember(context) { SurfaceView(context) }
 
     DisposableEffect(service) {
-        val surfaceView = SurfaceView(context)
         var attached = false
 
         // Rotation is recomputed from the *live* display rotation on every
@@ -382,7 +382,6 @@ fun CameraPreview(service: StreamService?, modifier: Modifier = Modifier) {
         modifier = modifier.background(Color.Black),
     )
 }
-
 /** The activity hosting this context, for orientation locks. */
 private fun findActivity(context: Context): Activity? {
     var current: Context = context

@@ -229,7 +229,7 @@ class GlStreamer {
             GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
             GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE,
         )
-        surfaceTexture = SurfaceTexture(texture, handler).apply {
+        surfaceTexture = SurfaceTexture(texture, false, handler).apply {
             setOnFrameAvailableListener { drawFrame() }
         }
         buildProgram()
