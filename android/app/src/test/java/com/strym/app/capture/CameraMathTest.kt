@@ -68,7 +68,7 @@ class CameraMathTest {
         assertTrue("TL x $tlX should overflow right", tlX > 1f)
         assertEquals(1f, tlY, 1e-3f)
         // Full coverage: every view corner is inside the rotated, scaled frame.
-        assertCoversView(m, 1080, 2400)
+        assertCoversView(m, bufferWidth = 1920, bufferHeight = 1080)
     }
 
     @Test
