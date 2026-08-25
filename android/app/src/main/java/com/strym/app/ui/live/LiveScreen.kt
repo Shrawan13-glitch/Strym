@@ -302,10 +302,11 @@ private fun StatCell(label: String, value: String) {
  * the service's camera streamer, which runs the Camera2 session and keeps the
  * viewfinder *and* the encoder's input surface bound at once — so the preview
  * keeps showing live video while streaming instead of freezing on the last
- * frame. The buffer is sensor-native (landscape); a rotation + fill transform
- * makes it upright on screen. Passing the surface (and holding the service's
- * camera open) only happens while the UI is visible or a stream is live, so
- * capture survives the screen turning off.
+ * frame. The buffer is sensor-native (landscape); a rotation + fit transform
+ * makes it upright and shows the full frame — preview now matches exactly what
+ * the encoder sends (no extra zoom/crop). Passing the surface (and holding the
+ * service's camera open) only happens while the UI is visible or a stream is
+ * live, so capture survives the screen turning off.
  */
 @Composable
 fun CameraPreview(service: StreamService?, modifier: Modifier = Modifier) {

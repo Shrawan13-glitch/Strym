@@ -14,7 +14,7 @@ import kotlin.math.roundToInt
 data class PreviewTransform(
     /** Clockwise rotation to apply to the buffer, 0/90/180/270. */
     val rotationDegrees: Int,
-    /** Uniform fill scale (≥1): no letterboxing, edges cropped as needed. */
+    /** Uniform fit scale: letterboxes when needed so the full buffer is visible. */
     val scale: Float,
 )
 
@@ -48,9 +48,10 @@ private fun aspectDiff(size: Pair<Int, Int>, aspect: Float): Float =
  *
  * The net clockwise rotation is the sensor's mounting orientation corrected for
  * the device's current display rotation; with the buffer rotated by 90/270 its
- * effective footprint swaps width/height. The scale fills the view completely
- * (FILL_CENTER): the larger of the two axis scales, so the shorter axis
- * overflows and is cropped rather than letterboxed.
+ * effective footprint swaps width/height. The scale fits the buffer inside the
+ * view (FIT_CENTER): the smaller of the two axis scales, so the whole buffer
+ * is visible with letterboxing — preview shows exactly what the stream encodes,
+ * no extra zoom/crop.
  */
 fun computePreviewTransform(
     sensorOrientation: Int,
@@ -66,7 +67,7 @@ fun computePreviewTransform(
     val rotation = ((sensorOrientation - deviceRotationDegrees) % 360 + 360) % 360
     val footprintWidth = if (rotation % 180 == 90) bufferHeight else bufferWidth
     val footprintHeight = if (rotation % 180 == 90) bufferWidth else bufferHeight
-    val scale = maxOf(
+    val scale = minOf(
         viewWidth.toFloat() / footprintWidth,
         viewHeight.toFloat() / footprintHeight,
     )
