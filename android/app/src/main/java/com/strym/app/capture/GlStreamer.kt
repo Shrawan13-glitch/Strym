@@ -99,6 +99,8 @@ class GlStreamer {
         handler.post {
             runCatching {
                 ensureInit()
+                Log.i(TAG, "viewfinder attach=${
+                    surface != null} ${width}x${height} rot=$rotationDegrees")
                 viewfinder?.let { destroyTarget(it) }
                 viewfinder = surface?.let { makeTarget(it, width, height, rotationDegrees) }
             }.onFailure(::logFatal)
@@ -180,7 +182,10 @@ class GlStreamer {
 
     /** Lazily bring up the EGL world; safe to call from any GL-thread task. */
     private fun ensureInit() {
-        if (program == 0) initGl()
+        if (program == 0) {
+            initGl()
+            Log.i(TAG, "GL initialized")
+        }
     }
 
     private fun initGl() {
@@ -299,16 +304,24 @@ class GlStreamer {
 
     private val stMatrix = FloatArray(16)
 
+    private var frameCount = 0
+    private var frameLog = 0
+
     private fun drawFrame() {
         val st = surfaceTexture ?: return
         val size = bufferSize ?: return
-        if (viewfinder == null && encoderTarget == null) return
+        if (viewfinder == null && encoderTarget == null) {
+            if (frameLog++ % 60 == 0) Log.w(TAG, "frame dropped: no render targets attached")
+            return
+        }
+        frameCount++
         try {
             st.updateTexImage()
         } catch (t: Throwable) {
             Log.w(TAG, "updateTexImage failed", t)
             return
         }
+        if (frameCount % 60 == 1) Log.i(TAG, "frame #$frameCount → view=${viewfinder != null} enc=${encoderTarget != null}")
         st.getTransformMatrix(stMatrix)
         GLES20.glUseProgram(program)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
@@ -329,7 +342,7 @@ class GlStreamer {
 
     private fun drawInto(target: Target) {
         if (!EGL14.eglMakeCurrent(display, target.egl, target.egl, context)) {
-            Log.w(TAG, "makeCurrent failed for target ${target.width}x${target.height}")
+            Log.w(TAG, "makeCurrent failed for target ${target.width}x${target.height}: ${EGL14.eglGetError()}")
             return
         }
         GLES20.glViewport(0, 0, target.width, target.height)
@@ -344,8 +357,13 @@ class GlStreamer {
             0,
         )
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+        val drawError = GLES20.glGetError()
         surfaceTexture?.let { EGLExt.eglPresentationTimeANDROID(display, target.egl, it.timestamp) }
-        EGL14.eglSwapBuffers(display, target.egl)
+        if (!EGL14.eglSwapBuffers(display, target.egl)) {
+            Log.w(TAG, "swapBuffers failed: ${EGL14.eglGetError()}")
+        } else if (frameCount % 60 == 1) {
+            Log.i(TAG, "swapped ${size.first}x${size.second} → ${target.width}x${target.height} rot=${target.rotationDegrees} glErr=$drawError")
+        }
     }
 
     private fun makeTarget(surface: Surface, width: Int, height: Int, rotationDegrees: Int): Target {

@@ -175,6 +175,7 @@ class CameraController(private val context: Context) {
 
     private val cameraCallback = object : CameraDevice.StateCallback() {
         override fun onOpened(device: CameraDevice) {
+            Log.i(TAG, "camera opened")
             camera = device
             if (session == null && !creating) createSession()
         }
@@ -231,6 +232,7 @@ class CameraController(private val context: Context) {
             reopenAttempts = 0
             session = capturing
             boundSurface = target
+            Log.i(TAG, "session configured; starting repeating request")
             startRepeating(capturing)
         }
 
@@ -262,6 +264,8 @@ class CameraController(private val context: Context) {
             return
         }
         runCatching { capturing.setRepeatingRequest(request.build(), null, cameraHandler) }
+            .onFailure { Log.e(TAG, "setRepeatingRequest failed", it) }
+            .onSuccess { Log.i(TAG, "repeating request live") }
     }
 
     private fun notifyError(message: String) {
