@@ -59,6 +59,7 @@ class GlStreamer {
     private var program = 0
     private var mvpLocation = 0
     private var stLocation = 0
+    private var bufLocation = 0
     private var texLocation = 0
     private var posLocation = 0
     private var uvLocation = 0
@@ -252,13 +253,14 @@ class GlStreamer {
     private fun buildProgram() {
         val vertex = """
             uniform mat4 uMVP;
-            uniform mat4 uST;
+            uniform mat4 uInvST;
+            uniform mat4 uBuf;
             attribute vec4 aPos;
             attribute vec4 aUV;
             varying vec2 vUV;
             void main() {
                 gl_Position = uMVP * aPos;
-                vUV = (uST * aUV).xy;
+                vUV = (uInvST * uBuf * aUV).xy;
             }
         """.trimIndent()
         val fragment = """
@@ -282,7 +284,8 @@ class GlStreamer {
                 "link failed: ${GLES20.glGetProgramInfoLog(created)}"
             }
             mvpLocation = GLES20.glGetUniformLocation(created, "uMVP")
-            stLocation = GLES20.glGetUniformLocation(created, "uST")
+            stLocation = GLES20.glGetUniformLocation(created, "uInvST")
+            bufLocation = GLES20.glGetUniformLocation(created, "uBuf")
             texLocation = GLES20.glGetUniformLocation(created, "uTex")
             posLocation = GLES20.glGetAttribLocation(created, "aPos")
             uvLocation = GLES20.glGetAttribLocation(created, "aUV")
@@ -335,10 +338,9 @@ class GlStreamer {
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, texture)
         GLES20.glUniform1i(texLocation, 0)
-        GLES20.glUniformMatrix4fv(stLocation, 1, false, stMatrix, 0)
-        if (frameCount == 1) {
-            Log.i(TAG, "ST=${stMatrix.joinToString { "%.2f".format(it) }}")
-        }
+        // Undo whatever flip/transpose the camera's ST carries; the per-target
+        // sampling transform then picks upright, fill-cropped texels.
+        GLES20.glUniformMatrix4fv(stLocation, 1, false, invertRigidTransform(stMatrix), 0)
         quad.position(0)
         GLES20.glVertexAttribPointer(posLocation, 2, GLES20.GL_FLOAT, false, 4 * FLOAT_BYTES, quad)
         GLES20.glEnableVertexAttribArray(posLocation)
@@ -359,27 +361,29 @@ class GlStreamer {
             return
         }
         GLES20.glViewport(0, 0, target.width, target.height)
-        // TEMP DIAGNOSTIC: red clear proves whether GL output reaches the
-        // screen (red screen = compositing OK, sampling broken; black =
-        // SurfaceView never composited).
-        GLES20.glClearColor(1f, 0f, 0f, 1f)
+        GLES20.glClearColor(0f, 0f, 0f, 1f)
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
         val size = bufferSize ?: return
-        val mvp = glFillCropTransform(
-            target.rotationDegrees, size.first, size.second, target.width, target.height,
+        GLES20.glUniformMatrix4fv(
+            bufLocation, 1, false,
+            glBufferSamplingTransform(
+                target.rotationDegrees, size.first, size.second, target.width, target.height,
+            ),
+            0,
         )
-        if (frameCount == 1) {
-            Log.i(TAG, "MVP rot=${target.rotationDegrees} buf=${size.first}x${size.second} " +
-                "view=${target.width}x${target.height} = ${mvp.joinToString { "%.3f".format(it) }}")
-        }
-        GLES20.glUniformMatrix4fv(mvpLocation, 1, false, mvp, 0)
+        GLES20.glUniformMatrix4fv(
+            mvpLocation, 1, false,
+            glFillCropTransform(
+                target.rotationDegrees, size.first, size.second, target.width, target.height,
+            ),
+            0,
+        )
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
-        val drawError = GLES20.glGetError()
         surfaceTexture?.let { EGLExt.eglPresentationTimeANDROID(display, target.egl, it.timestamp) }
         if (!EGL14.eglSwapBuffers(display, target.egl)) {
             Log.w(TAG, "swapBuffers failed: ${EGL14.eglGetError()}")
         } else if (frameCount % 60 == 1) {
-            Log.i(TAG, "swapped ${size.first}x${size.second} → ${target.width}x${target.height} rot=${target.rotationDegrees} glErr=$drawError")
+            Log.i(TAG, "swapped ${size.first}x${size.second} → ${target.width}x${target.height} rot=${target.rotationDegrees}")
         }
     }
 
