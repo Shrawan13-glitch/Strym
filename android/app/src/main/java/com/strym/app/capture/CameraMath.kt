@@ -37,8 +37,9 @@ private fun aspectDiff(size: Pair<Int, Int>, aspect: Float): Float =
  * 0/90/180/270, clockwise as seen on screen) about the center, then uniformly
  * scaled so the frame covers the whole target — the shorter axis overflows
  * and is center-cropped, never letterboxed or distorted (FILL_CENTER, the
- * stock-camera look). Pass the result as the vertex shader's uMVPMatrix;
- * the SurfaceTexture's own transform stays a separate sampler matrix.
+ * stock-camera look). Pass the result as the vertex shader's uMVPMatrix,
+ * applied to the standard full-screen quad in clip space (±1); the
+ * SurfaceTexture's own transform stays a separate sampler matrix.
  *
  * Degenerate inputs yield identity rather than NaNs.
  */
@@ -87,11 +88,16 @@ fun glFillCropTransform(
     val e = -2f * fill * cos / viewHeight
     val c = 2f * centerX / viewWidth - 1f - a * bufferCenterX - b * bufferCenterY
     val f = 1f - 2f * centerY / viewHeight - d * bufferCenterX - e * bufferCenterY
+    // The shader's vertex attribute is the clip-space quad (±1), not buffer
+    // pixels: fold the pixel-rect → quad scaling into the matrix, i.e.
+    // M' = M · S where pixel p = S(q) = ((q.x+1)/2·bw, (q.y+1)/2·bh).
+    val sx = bufferWidth / 2f
+    val sy = bufferHeight / 2f
     return floatArrayOf(
-        a, d, 0f, 0f, // column 0
-        b, e, 0f, 0f, // column 1
+        a * sx, d * sx, 0f, 0f, // column 0
+        b * sy, e * sy, 0f, 0f, // column 1
         0f, 0f, 1f, 0f, // column 2
-        c, f, 0f, 1f, // column 3 (translation)
+        a * sx + b * sy + c, d * sx + e * sy + f, 0f, 1f, // column 3 (translation)
     )
 }
 
@@ -104,8 +110,8 @@ private val IDENTITY = floatArrayOf(
 
 /**
  * Applies [m] (column-major, as produced by [glFillCropTransform]) to the
- * buffer-space point ([x], [y]) and returns its NDC position — test seam for
- * asserting where frame corners land without a GPU.
+ * clip-space quad point ([x], [y]) and returns its NDC position — test seam
+ * for asserting where frame corners land without a GPU.
  */
 fun applyTransform(m: FloatArray, x: Float, y: Float): Pair<Float, Float> =
     (m[0] * x + m[4] * y + m[12]) to (m[1] * x + m[5] * y + m[13])

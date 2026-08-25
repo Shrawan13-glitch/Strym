@@ -267,10 +267,7 @@ class GlStreamer {
             varying vec2 vUV;
             uniform samplerExternalOES uTex;
             void main() {
-                // TEMP DIAGNOSTIC: solid green — isolates vertex stage from
-                // texture sampling.
-                gl_FragColor = vec4(0.0, 1.0, 0.0, 1.0);
-                // gl_FragColor = texture2D(uTex, vUV);
+                gl_FragColor = texture2D(uTex, vUV);
             }
         """.trimIndent()
         program = GLES20.glCreateProgram().also { created ->
@@ -342,9 +339,11 @@ class GlStreamer {
         quad.position(0)
         GLES20.glVertexAttribPointer(posLocation, 2, GLES20.GL_FLOAT, false, 4 * FLOAT_BYTES, quad)
         GLES20.glEnableVertexAttribArray(posLocation)
-        quad.position(2)
-        GLES20.glVertexAttribPointer(uvLocation, 2, GLES20.GL_FLOAT, false, 4 * FLOAT_BYTES, quad)
-        GLES20.glEnableVertexAttribArray(uvLocation)
+        if (uvLocation >= 0) {
+            quad.position(2)
+            GLES20.glVertexAttribPointer(uvLocation, 2, GLES20.GL_FLOAT, false, 4 * FLOAT_BYTES, quad)
+            GLES20.glEnableVertexAttribArray(uvLocation)
+        }
         viewfinder?.let(::drawInto)
         encoderTarget?.let(::drawInto)
         GLES20.glDisableVertexAttribArray(posLocation)
