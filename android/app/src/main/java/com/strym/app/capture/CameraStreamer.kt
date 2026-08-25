@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
+import android.view.WindowManager
 import com.strym.app.settings.BroadcastSettings
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -34,8 +35,17 @@ class CameraStreamer(context: Context) {
 
     private val controller = CameraController(context)
     private val gl = GlStreamer()
-    private val displayRotationDegrees: Int =
-        ((context.display?.rotation ?: 0) * 90)
+
+    /**
+     * Display rotation, read lazily: a Service context has no display and
+     * `Context.getDisplay()` throws for background contexts — asking at
+     * construction time crashed every service start.
+     */
+    private fun displayRotationDegrees(): Int {
+        val wm = context.getSystemService(Context.WINDOW_SERVICE) as? WindowManager
+        @Suppress("DEPRECATION")
+        return (wm?.defaultDisplay?.rotation ?: Surface.ROTATION_0) * 90
+    }
 
     @Volatile
     private var viewfinderAttached = false
@@ -159,7 +169,7 @@ class CameraStreamer(context: Context) {
         // Upright the sensor frame for the hold captured at go-live; the
         // encoded canvas matches, so viewers see upright portrait or
         // landscape pixels without any rotation metadata.
-        val upright = ((controller.sensorOrientation() - displayRotationDegrees) % 360 + 360) % 360
+        val upright = ((controller.sensorOrientation() - displayRotationDegrees()) % 360 + 360) % 360
         gl.setEncoder(created.inputSurface(), selection.size.width, selection.size.height, upright)
         ensureCamera()
     }
