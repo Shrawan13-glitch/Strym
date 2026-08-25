@@ -267,18 +267,29 @@ class GlStreamer {
             varying vec2 vUV;
             uniform samplerExternalOES uTex;
             void main() {
-                gl_FragColor = texture2D(uTex, vUV);
+                // TEMP DIAGNOSTIC: solid green — isolates vertex stage from
+                // texture sampling.
+                gl_FragColor = vec4(0.0, 1.0, 0.0, 1.0);
+                // gl_FragColor = texture2D(uTex, vUV);
             }
         """.trimIndent()
         program = GLES20.glCreateProgram().also { created ->
-            GLES20.glAttachShader(created, compile(GLES20.GL_VERTEX_SHADER, vertex))
-            GLES20.glAttachShader(created, compile(GLES20.GL_FRAGMENT_SHADER, fragment))
+            val vs = compile(GLES20.GL_VERTEX_SHADER, vertex)
+            val fs = compile(GLES20.GL_FRAGMENT_SHADER, fragment)
+            GLES20.glAttachShader(created, vs)
+            GLES20.glAttachShader(created, fs)
             GLES20.glLinkProgram(created)
+            val linked = IntArray(1)
+            GLES20.glGetProgramiv(created, GLES20.GL_LINK_STATUS, linked, 0)
+            check(linked[0] == GLES20.GL_TRUE) {
+                "link failed: ${GLES20.glGetProgramInfoLog(created)}"
+            }
             mvpLocation = GLES20.glGetUniformLocation(created, "uMVP")
             stLocation = GLES20.glGetUniformLocation(created, "uST")
             texLocation = GLES20.glGetUniformLocation(created, "uTex")
             posLocation = GLES20.glGetAttribLocation(created, "aPos")
             uvLocation = GLES20.glGetAttribLocation(created, "aUV")
+            Log.i(TAG, "program linked: pos=$posLocation uv=$uvLocation mvp=$mvpLocation")
         }
     }
 
