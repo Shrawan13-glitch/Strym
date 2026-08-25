@@ -17,6 +17,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.resumeWithException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 
@@ -150,7 +151,8 @@ class CameraXEngine(
     private fun onGlSurfaceRequest(request: SurfaceRequest) {
         val size = request.resolution
         gl.obtainCameraSurface(size.width, size.height) { surface ->
-            if (request.isCancelled) return@obtainCameraSurface
+            // A cancelled request tolerates a late provideSurface; the result
+            // listener simply reports it as cancelled.
             request.provideSurface(surface, mainExecutor) { }
         }
     }
