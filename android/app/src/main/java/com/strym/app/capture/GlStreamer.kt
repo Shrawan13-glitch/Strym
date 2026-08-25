@@ -335,6 +335,9 @@ class GlStreamer {
         }
         if (frameCount % 60 == 1) Log.i(TAG, "frame #$frameCount → view=${viewfinder != null} enc=${encoderTarget != null}")
         st.getTransformMatrix(stMatrix)
+        if (frameCount == 1) {
+            Log.i(TAG, "TEMP ST: " + stMatrix.joinToString(prefix="[", postfix="]") { "%.3f".format(it) })
+        }
         GLES20.glUseProgram(program)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, texture)
