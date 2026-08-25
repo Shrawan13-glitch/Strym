@@ -83,7 +83,7 @@ fun glFillCropTransform(
     //   ndcX = 2*t.x/vw - 1 ; ndcY = 1 - 2*t.y/vh
     val a = 2f * fill * cos / viewWidth
     val b = -2f * fill * sin / viewWidth
-    val d = 2f * fill * sin / viewHeight
+    val d = -2f * fill * sin / viewHeight
     val e = -2f * fill * cos / viewHeight
     val c = 2f * centerX / viewWidth - 1f - a * bufferCenterX - b * bufferCenterY
     val f = 1f - 2f * centerY / viewHeight - d * bufferCenterX - e * bufferCenterY
