@@ -1,14 +1,15 @@
 package com.strym.app.ui.live
 
 import android.Manifest
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
+import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.content.res.Configuration
-import android.graphics.Matrix
-import android.graphics.SurfaceTexture
 import android.os.Build
-import android.util.Size
-import android.view.Surface
-import android.view.TextureView
+import android.view.SurfaceHolder
+import android.view.SurfaceView
 import android.view.View
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -19,7 +20,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -38,6 +38,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -46,7 +47,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -54,7 +54,6 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.strym.app.R
-import com.strym.app.capture.computePreviewTransform
 import com.strym.app.service.StreamService
 import com.strym.app.session.StatsSnapshot
 import com.strym.app.session.StreamPhase
@@ -87,8 +86,26 @@ fun LiveScreen(
     // proceeds to go live; the settings row remains for anyone who skips.
     var showBatteryDialog by remember { mutableStateOf(false) }
 
+    fun goLiveNow() {
+        // Freeze the hold for the whole broadcast: the encoded shape and its
+        // uprighting rotation are decided from the orientation at go-live,
+        // so rotating mid-stream must not change them (the StreamCaster
+        // model — one question, asked once).
+        findActivity(context)?.requestedOrientation = currentOrientationLock(context)
+        service?.goLive(settings)
+    }
+
+    // Release the lock whenever no session exists (stopped, failed, or never
+    // started) so normal rotation resumes.
+    LaunchedEffect(state.hasSession) {
+        if (!state.hasSession) {
+            findActivity(context)?.requestedOrientation =
+                ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
+    }
+
     Box(Modifier.fillMaxSize()) {
-        CameraPreview(service, settings.aspect.ratio, Modifier.fillMaxSize())
+        CameraPreview(service, Modifier.fillMaxSize())
 
         Row(
             modifier = Modifier
@@ -142,7 +159,7 @@ fun LiveScreen(
                         notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                     }
                     if (BatteryPrompt.isExempt(context) || BatteryPrompt.wasAsked(context)) {
-                        service?.goLive(settings)
+                        goLiveNow()
                     } else {
                         // First broadcast: explain the exemption once, then go
                         // live either way.
@@ -161,12 +178,12 @@ fun LiveScreen(
                 showBatteryDialog = false
                 BatteryPrompt.markAsked(context)
                 context.startActivity(BatteryPrompt.requestIntent(context))
-                service?.goLive(settings)
+                goLiveNow()
             },
             onNotNow = {
                 showBatteryDialog = false
                 BatteryPrompt.markAsked(context)
-                service?.goLive(settings)
+                goLiveNow()
             },
             onDismissed = { showBatteryDialog = false },
         )
@@ -302,98 +319,84 @@ private fun StatCell(label: String, value: String) {
 }
 
 /**
- * Live viewfinder over raw Camera2, the stock-camera way: a centered window
- * of the selected stream aspect (rotated upright for the current hold) on a
- * black background — content is never distorted or sideways. The [TextureView]
- * fills that window, and the sensor orientation is read fresh on every
- * transform update: capturing it at composition time races service binding
- * and left the viewfinder permanently sideways. The window's surface is
- * handed to the service's camera streamer, which keeps the viewfinder *and*
- * the encoder's input surface bound at once — the preview keeps showing live
- * video while streaming. Passing the surface (and holding the service's
- * camera open) only happens while the UI is visible or a stream is live, so
- * capture survives the screen turning off.
+ * Live viewfinder over the GL pipeline, the stock-camera way: one full-screen
+ * surface. Rotation, fill-crop, and uprighting happen inside [GlStreamer] —
+ * the same pass that feeds the encoder, so what you see is exactly what
+ * viewers get, in any hold. The UI's only jobs are handing its surface over
+ * and reporting the current display rotation.
  */
 @Composable
-fun CameraPreview(service: StreamService?, streamAspect: Float, modifier: Modifier = Modifier) {
+fun CameraPreview(service: StreamService?, modifier: Modifier = Modifier) {
     val context = LocalContext.current
-    val textureView = remember(context) { TextureView(context) }
-    val display = remember(context) { context.display }
-    val configuration = LocalConfiguration.current
-    var chosenSize by remember { mutableStateOf<Size?>(null) }
-
-    // Window shape in screen space: the stream frame rotated upright for the
-    // hold (a 16:9 frame held portrait fills a tall 9:16 window, like every
-    // stock camera's aspect selector).
-    val portraitHold = configuration.orientation == Configuration.ORIENTATION_PORTRAIT
-    val windowAspect = if (portraitHold) 1f / streamAspect else streamAspect
-
-    fun updateTransform() {
-        val bufferWidth = chosenSize?.width ?: return
-        val bufferHeight = chosenSize?.height ?: return
-        // Read fresh every time: the service (and with it the camera streamer)
-        // may bind after this composable first composes, and a value frozen
-        // then would rotate by the wrong amount (the "sideways preview" bug).
-        val sensorOrientation = service?.camera?.sensorOrientation() ?: return
-        val transform = computePreviewTransform(
-            sensorOrientation = sensorOrientation,
-            deviceRotationDegrees = (display?.rotation ?: 0) * 90,
-            bufferWidth = bufferWidth,
-            bufferHeight = bufferHeight,
-            viewWidth = textureView.width,
-            viewHeight = textureView.height,
-        )
-        val matrix = Matrix()
-        val cx = textureView.width / 2f
-        val cy = textureView.height / 2f
-        matrix.postScale(transform.scale, transform.scale, cx, cy)
-        matrix.postRotate(transform.rotationDegrees.toFloat(), cx, cy)
-        textureView.setTransform(matrix)
-    }
 
     DisposableEffect(service) {
-        val listener = object : TextureView.SurfaceTextureListener {
-            override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
-                val size = service?.camera?.choosePreviewSize(streamAspect)
-                if (size != null) surface.setDefaultBufferSize(size.width, size.height)
-                chosenSize = size
-                service?.camera?.setPreviewSurface(Surface(surface), size)
-                updateTransform()
-            }
+        val surfaceView = SurfaceView(context)
+        var attached = false
 
-            override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) {
-                val size = service?.camera?.choosePreviewSize(streamAspect)
-                if (size != null) surface.setDefaultBufferSize(size.width, size.height)
-                chosenSize = size
-                updateTransform()
+        // Rotation is recomputed from the *live* display rotation on every
+        // push: reading it at composition time races service binding (the
+        // old "sideways preview" bug) and misses mid-hold changes.
+        fun push(width: Int, height: Int) {
+            val camera = service?.camera ?: return
+            if (width == 0 || height == 0 || !surfaceView.holder.surface.isValid) return
+            val sensor = camera.sensorOrientation()
+            val deviceRotation = (context.display?.rotation ?: 0) * 90
+            val upright = ((sensor - deviceRotation) % 360 + 360) % 360
+            if (!attached) {
+                attached = true
+                camera.setPreviewSurface(surfaceView.holder.surface, width, height, upright)
+            } else {
+                camera.updatePreviewTransform(width, height, upright)
             }
-            override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean = true
-
-            override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {}
         }
-        textureView.setSurfaceTextureListener(listener)
-        if (textureView.isAvailable) {
-            val surface = textureView.surfaceTexture
-            if (surface != null) listener.onSurfaceTextureAvailable(surface, 0, 0)
+
+        val callbacks = object : SurfaceHolder.Callback {
+            override fun surfaceCreated(holder: SurfaceHolder) = Unit
+
+            override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+                push(width, height)
+            }
+
+            override fun surfaceDestroyed(holder: SurfaceHolder) {
+                attached = false
+                service?.camera?.setPreviewSurface(null, 0, 0, 0)
+            }
+        }
+        surfaceView.holder.addCallback(callbacks)
+        if (surfaceView.holder.surface != null && surfaceView.width > 0) {
+            push(surfaceView.width, surfaceView.height)
         }
         val layoutListener = View.OnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
-            updateTransform()
+            push(surfaceView.width, surfaceView.height)
         }
-        textureView.addOnLayoutChangeListener(layoutListener)
+        surfaceView.addOnLayoutChangeListener(layoutListener)
         onDispose {
-            textureView.removeOnLayoutChangeListener(layoutListener)
-            textureView.setSurfaceTextureListener(null)
-            service?.camera?.setPreviewSurface(null, null)
+            surfaceView.removeOnLayoutChangeListener(layoutListener)
+            surfaceView.holder.removeCallback(callbacks)
+            service?.camera?.setPreviewSurface(null, 0, 0, 0)
         }
     }
 
-    Box(modifier.background(Color.Black)) {
-        Box(
-            modifier = Modifier
-                .align(Alignment.Center)
-                .aspectRatio(windowAspect),
-        ) {
-            AndroidView(factory = { textureView }, modifier = Modifier.fillMaxSize())
-        }
-    }
+    AndroidView(
+        factory = { surfaceView },
+        modifier = modifier.background(Color.Black),
+    )
 }
+
+/** The activity hosting this context, for orientation locks. */
+private fun findActivity(context: Context): Activity? {
+    var current: Context = context
+    while (current is ContextWrapper) {
+        if (current is Activity) return current
+        current = current.baseContext
+    }
+    return null
+}
+
+/** Lock to whichever orientation the device is held in right now. */
+private fun currentOrientationLock(context: Context): Int =
+    if (context.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
+        ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+    } else {
+        ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+    }

@@ -1,0 +1,359 @@
+package com.strym.app.capture
+
+import android.graphics.SurfaceTexture
+import android.opengl.EGL14
+import android.opengl.EGLConfig
+import android.opengl.EGLContext
+import android.opengl.EGLDisplay
+import android.opengl.EGLExt
+import android.opengl.EGLSurface
+import android.opengl.GLES11Ext
+import android.opengl.GLES20
+import android.os.Handler
+import android.os.HandlerThread
+import android.util.Log
+import android.view.Surface
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.nio.FloatBuffer
+
+private const val TAG = "StrymGl"
+
+/** EGL config attribute for surfaces MediaCodec can consume (API 18+). */
+private const val EGL_RECORDABLE_ANDROID = 0x3142
+
+/**
+ * The single GL pipeline between the camera and every consumer of its frames
+ * — the stock-camera/RootEncoder architecture. The camera writes sensor-native
+ * frames into one [SurfaceTexture]; each frame is drawn as a textured quad
+ * into whichever render targets are attached:
+ *
+ *  - the **viewfinder** (a UI surface): rotated upright for the current hold,
+ *    fill-cropped to the screen,
+ *  - the **encoder** input surface (while live): rotated upright for the hold
+ *    captured at go-live, fill-cropped to the encoded resolution — so viewers
+ *    receive genuinely upright portrait *or* landscape pixels.
+ *
+ * Rotation, crop, and scale all happen here, on the GPU, from one source of
+ * truth (`CameraMath.glFillCropTransform`) — which is why the preview and the
+ * stream can no longer disagree. Owns a dedicated thread + EGL context; all
+ * GL work is confined to it.
+ */
+class GlStreamer {
+
+    class Target(
+        internal val egl: EGLSurface,
+        @Volatile var width: Int,
+        @Volatile var height: Int,
+        @Volatile var rotationDegrees: Int,
+    )
+
+    private val thread = HandlerThread("stry-gl").also { it.start() }
+    private val handler = Handler(thread.looper)
+
+    private var display: EGLDisplay = EGL14.EGL_NO_DISPLAY
+    private var context: EGLContext = EGL14.EGL_NO_CONTEXT
+    private var config: EGLConfig? = null
+    private var dummy: EGLSurface = EGL14.EGL_NO_SURFACE
+
+    private var program = 0
+    private var mvpLocation = 0
+    private var stLocation = 0
+    private var texLocation = 0
+    private var posLocation = 0
+    private var uvLocation = 0
+
+    private var texture = 0
+    private var surfaceTexture: SurfaceTexture? = null
+    private var cameraSurface: Surface? = null
+    private var bufferSize: Pair<Int, Int>? = null
+
+    @Volatile
+    private var viewfinder: Target? = null
+
+    @Volatile
+    private var encoderTarget: Target? = null
+
+    /**
+     * Create the EGL world and the camera-facing [SurfaceTexture]. [onReady]
+     * receives the surface to hand to Camera2 plus the chosen buffer size.
+     */
+    fun start(bufferWidth: Int, bufferHeight: Int, onReady: (Surface) -> Unit) {
+        handler.post {
+            try {
+                initGl()
+                surfaceTexture?.setDefaultBufferSize(bufferWidth, bufferHeight)
+                bufferSize = bufferWidth to bufferHeight
+                val st = surfaceTexture ?: error("no SurfaceTexture")
+                cameraSurface?.release()
+                cameraSurface = Surface(st)
+                onReady(cameraSurface!!)
+            } catch (t: Throwable) {
+                Log.e(TAG, "GL start failed", t)
+            }
+        }
+    }
+
+    /** Attach or replace the on-screen viewfinder target. Null detaches. */
+    fun setViewfinder(surface: Surface?, width: Int, height: Int, rotationDegrees: Int) {
+        handler.post {
+            runCatching {
+                viewfinder?.let { destroyTarget(it) }
+                viewfinder = surface?.let { makeTarget(it, width, height, rotationDegrees) }
+            }.onFailure(::logFatal)
+        }
+    }
+
+    /** Update geometry of the attached viewfinder without recreating anything. */
+    fun updateViewfinder(width: Int, height: Int, rotationDegrees: Int) {
+        viewfinder?.let {
+            it.width = width
+            it.height = height
+            it.rotationDegrees = rotationDegrees
+        }
+    }
+
+    /** Attach the encoder's input surface (go-live). */
+    fun setEncoder(surface: Surface, width: Int, height: Int, rotationDegrees: Int) {
+        handler.post {
+            runCatching {
+                encoderTarget?.let(::destroyTarget)
+                encoderTarget = makeTarget(surface, width, height, rotationDegrees)
+            }.onFailure(::logFatal)
+        }
+    }
+
+    /**
+     * Detach the encoder target; [onDetached] runs on the GL thread after the
+     * last draw into it — the point where releasing the codec is safe.
+     */
+    fun removeEncoder(onDetached: () -> Unit) {
+        handler.post {
+            runCatching {
+                encoderTarget?.let(::destroyTarget)
+                encoderTarget = null
+            }
+            onDetached()
+        }
+    }
+
+    /** Tear everything down. Idempotent. */
+    fun close() {
+        handler.post {
+            viewfinder?.let(::destroyTarget)
+            viewfinder = null
+            encoderTarget?.let(::destroyTarget)
+            encoderTarget = null
+            cameraSurface?.release()
+            cameraSurface = null
+            surfaceTexture?.setOnFrameAvailableListener(null)
+            surfaceTexture?.release()
+            surfaceTexture = null
+            GLES20.glDeleteTextures(1, intArrayOf(texture), 0)
+            texture = 0
+            GLES20.glDeleteProgram(program)
+            program = 0
+            if (display != EGL14.EGL_NO_DISPLAY) {
+                EGL14.eglMakeCurrent(
+                    display,
+                    EGL14.EGL_NO_SURFACE,
+                    EGL14.EGL_NO_SURFACE,
+                    EGL14.EGL_NO_CONTEXT,
+                )
+                EGL14.eglDestroySurface(display, dummy)
+                EGL14.eglDestroyContext(display, context)
+                EGL14.eglTerminate(display)
+            }
+            display = EGL14.EGL_NO_DISPLAY
+            context = EGL14.EGL_NO_CONTEXT
+        }
+        thread.quitSafely()
+    }
+
+    // --- GL thread ----------------------------------------------------------
+
+    private fun logFatal(t: Throwable) {
+        Log.e(TAG, "GL pipeline failure", t)
+    }
+
+    private fun initGl() {
+        if (program != 0) return
+        display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
+        val version = IntArray(2)
+        check(display != EGL14.EGL_NO_DISPLAY && EGL14.eglInitialize(display, version, 0, version, 1)) {
+            "EGL display unavailable"
+        }
+        val attribs = intArrayOf(
+            EGL14.EGL_RED_SIZE, 8,
+            EGL14.EGL_GREEN_SIZE, 8,
+            EGL14.EGL_BLUE_SIZE, 8,
+            EGL14.EGL_ALPHA_SIZE, 8,
+            EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
+            EGL14.EGL_SURFACE_TYPE, EGL14.EGL_WINDOW_BIT or EGL14.EGL_PBUFFER_BIT,
+            EGL_RECORDABLE_ANDROID, 1,
+            EGL14.EGL_NONE,
+        )
+        val configs = arrayOfNulls<EGLConfig>(1)
+        val counts = IntArray(1)
+        check(EGL14.eglChooseConfig(display, attribs, 0, configs, 0, 1, counts, 0) && counts[0] > 0) {
+            "No recordable EGL config"
+        }
+        config = configs[0]
+        context = EGL14.eglCreateContext(
+            display, config, EGL14.EGL_NO_CONTEXT,
+            intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 2, EGL14.EGL_NONE), 0,
+        )
+        check(context != EGL14.EGL_NO_CONTEXT) { "EGL context creation failed" }
+        dummy = EGL14.eglCreatePbufferSurface(
+            display, config,
+            intArrayOf(EGL14.EGL_WIDTH, 1, EGL14.EGL_HEIGHT, 1, EGL14.EGL_NONE), 0,
+        )
+        check(dummy != EGL14.EGL_NO_SURFACE) { "Pbuffer failed" }
+        EGL14.eglMakeCurrent(display, dummy, dummy, context)
+
+        texture = IntArray(1).also { GLES20.glGenTextures(1, it, 0) }[0]
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, texture)
+        GLES20.glTexParameteri(
+            GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
+            GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR,
+        )
+        GLES20.glTexParameteri(
+            GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
+            GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR,
+        )
+        GLES20.glTexParameteri(
+            GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
+            GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE,
+        )
+        GLES20.glTexParameteri(
+            GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
+            GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE,
+        )
+        surfaceTexture = SurfaceTexture(texture, handler).apply {
+            setOnFrameAvailableListener { drawFrame() }
+        }
+        buildProgram()
+    }
+
+    private fun buildProgram() {
+        val vertex = """
+            uniform mat4 uMVP;
+            uniform mat4 uST;
+            attribute vec4 aPos;
+            attribute vec4 aUV;
+            varying vec2 vUV;
+            void main() {
+                gl_Position = uMVP * aPos;
+                vUV = (uST * aUV).xy;
+            }
+        """.trimIndent()
+        val fragment = """
+            #extension GL_OES_EGL_image_external : require
+            precision mediump float;
+            varying vec2 vUV;
+            uniform samplerExternalOES uTex;
+            void main() {
+                gl_FragColor = texture2D(uTex, vUV);
+            }
+        """.trimIndent()
+        program = GLES20.glCreateProgram().also { created ->
+            GLES20.glAttachShader(created, compile(GLES20.GL_VERTEX_SHADER, vertex))
+            GLES20.glAttachShader(created, compile(GLES20.GL_FRAGMENT_SHADER, fragment))
+            GLES20.glLinkProgram(created)
+            mvpLocation = GLES20.glGetUniformLocation(created, "uMVP")
+            stLocation = GLES20.glGetUniformLocation(created, "uST")
+            texLocation = GLES20.glGetUniformLocation(created, "uTex")
+            posLocation = GLES20.glGetAttribLocation(created, "aPos")
+            uvLocation = GLES20.glGetAttribLocation(created, "aUV")
+        }
+    }
+
+    private fun compile(type: Int, source: String): Int =
+        GLES20.glCreateShader(type).also { shader ->
+            GLES20.glShaderSource(shader, source)
+            GLES20.glCompileShader(shader)
+        }
+
+    private val quad: FloatBuffer by lazy {
+        ByteBuffer.allocateDirect(16 * FLOAT_BYTES).order(ByteOrder.nativeOrder()).asFloatBuffer()
+            .apply {
+                // x, y, u, v triangle strip covering the full target.
+                put(floatArrayOf(
+                    -1f, -1f, 0f, 1f,
+                    1f, -1f, 1f, 1f,
+                    -1f, 1f, 0f, 0f,
+                    1f, 1f, 1f, 0f,
+                ))
+                position(0)
+            }
+    }
+
+    private val stMatrix = FloatArray(16)
+
+    private fun drawFrame() {
+        val st = surfaceTexture ?: return
+        val size = bufferSize ?: return
+        if (viewfinder == null && encoderTarget == null) return
+        try {
+            st.updateTexImage()
+        } catch (t: Throwable) {
+            Log.w(TAG, "updateTexImage failed", t)
+            return
+        }
+        st.getTransformMatrix(stMatrix)
+        GLES20.glUseProgram(program)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, texture)
+        GLES20.glUniform1i(texLocation, 0)
+        GLES20.glUniformMatrix4fv(stLocation, 1, false, stMatrix, 0)
+        quad.position(0)
+        GLES20.glVertexAttribPointer(posLocation, 2, GLES20.GL_FLOAT, false, 4 * FLOAT_BYTES, quad)
+        GLES20.glEnableVertexAttribArray(posLocation)
+        quad.position(2)
+        GLES20.glVertexAttribPointer(uvLocation, 2, GLES20.GL_FLOAT, false, 4 * FLOAT_BYTES, quad)
+        GLES20.glEnableVertexAttribArray(uvLocation)
+        viewfinder?.let(::drawInto)
+        encoderTarget?.let(::drawInto)
+        GLES20.glDisableVertexAttribArray(posLocation)
+        GLES20.glDisableVertexAttribArray(uvLocation)
+    }
+
+    private fun drawInto(target: Target) {
+        if (!EGL14.eglMakeCurrent(display, target.egl, target.egl, context)) {
+            Log.w(TAG, "makeCurrent failed for target ${target.width}x${target.height}")
+            return
+        }
+        GLES20.glViewport(0, 0, target.width, target.height)
+        GLES20.glClearColor(0f, 0f, 0f, 1f)
+        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+        val size = bufferSize ?: return
+        GLES20.glUniformMatrix4fv(
+            mvpLocation, 1, false,
+            glFillCropTransform(
+                target.rotationDegrees, size.first, size.second, target.width, target.height,
+            ),
+            0,
+        )
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+        surfaceTexture?.let { EGLExt.eglPresentationTimeANDROID(display, target.egl, it.timestamp) }
+        EGL14.eglSwapBuffers(display, target.egl)
+    }
+
+    private fun makeTarget(surface: Surface, width: Int, height: Int, rotationDegrees: Int): Target {
+        val cfg = config ?: error("EGL not initialised")
+        val egl = EGL14.eglCreateWindowSurface(display, cfg, surface, intArrayOf(EGL14.EGL_NONE), 0)
+        check(egl != EGL14.EGL_NO_SURFACE) { "EGL window surface failed" }
+        return Target(egl, width, height, rotationDegrees)
+    }
+
+    private fun destroyTarget(target: Target) {
+        EGL14.eglMakeCurrent(
+            display, dummy, dummy, context,
+        )
+        EGL14.eglDestroySurface(display, target.egl)
+    }
+
+    companion object {
+        private const val FLOAT_BYTES = 4
+    }
+}

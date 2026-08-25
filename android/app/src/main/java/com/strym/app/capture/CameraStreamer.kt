@@ -3,7 +3,6 @@ package com.strym.app.capture
 import android.content.Context
 import android.os.SystemClock
 import android.util.Log
-import android.util.Size
 import android.view.Surface
 import com.strym.app.settings.BroadcastSettings
 import java.util.concurrent.Executors
@@ -17,26 +16,34 @@ private const val VIDEO_STALE_MS = 2_000L
 private const val HEARTBEAT_INTERVAL_MS = 1_000L
 
 /**
- * Coordinates camera → encoder → session over raw Camera2 ([CameraController]).
+ * Coordinates camera → GL → encoder → session.
  *
- * Dual-surface by design: the UI's viewfinder surface and the H.264 encoder's
- * input surface are both bound to the camera at once, so the preview keeps
- * showing live video while the stream runs. Idle → only the preview surface is
- * fed; live → the encoder surface joins it (zero-copy, no ImageProxy, no GL
- * round-trip). The camera stays open only while a preview surface is attached
- * or a stream is live, so capture is safe with the screen off and no
- * background-camera access is held otherwise.
+ * The camera feeds exactly one consumer: [GlStreamer]'s SurfaceTexture. The
+ * GL pipeline then draws every frame into both the UI's viewfinder surface
+ * and (while live) the H.264 encoder's input surface — rotated upright and
+ * fill-cropped per target, so the preview always matches the stream and
+ * portrait *or* landscape broadcasts carry genuinely upright pixels. Going
+ * live attaches one render target; it never reconfigures the camera session,
+ * and stopping detaches it before the codec is released.
+ *
+ * The camera stays open only while a preview surface is attached or a stream
+ * is live, so capture is safe with the screen off and no background-camera
+ * access is held otherwise.
  */
 class CameraStreamer(context: Context) {
 
     private val controller = CameraController(context)
+    private val gl = GlStreamer()
+    private val displayRotationDegrees: Int =
+        ((context.display?.rotation ?: 0) * 90)
 
     @Volatile
-    private var preview: Surface? = null
-    private var previewSize: Size? = null
+    private var viewfinderAttached = false
+
+    private var cameraStarted = false
+    private var cameraSurface: Surface? = null
 
     private var encoder: VideoEncoder? = null
-    private var encoderSize: Size? = null
     private var ingest: MediaIngest? = null
     private var onError: ((String) -> Unit)? = null
     private var encoding = false
@@ -70,9 +77,6 @@ class CameraStreamer(context: Context) {
 
     private var lastHeartbeatWallMs = 0L
 
-    /** A supported viewfinder size near the stream aspect. */
-    fun choosePreviewSize(aspect: Float): Size? = controller.choosePreviewSize(aspect)
-
     /** Sensor orientation in degrees; the UI rotates its viewfinder with it. */
     fun sensorOrientation(): Int = controller.sensorOrientation()
 
@@ -82,22 +86,39 @@ class CameraStreamer(context: Context) {
      * camera access, so the camera only stays open while the UI is visible or
      * a stream is live.
      */
-    fun setPreviewSurface(surface: Surface?, size: Size?) {
-        preview = surface
-        previewSize = size
-        reconfigure()
+    fun setPreviewSurface(surface: Surface?, width: Int, height: Int, rotationDegrees: Int) {
+        if (surface != null) {
+            viewfinderAttached = true
+            gl.setViewfinder(surface, width, height, rotationDegrees)
+            ensureCamera()
+        } else {
+            viewfinderAttached = false
+            gl.setViewfinder(null, 0, 0, 0)
+            releaseCameraIfIdle()
+        }
+    }
+
+    /** Refresh the viewfinder's size/rotation (display rotated or resized). */
+    fun updatePreviewTransform(width: Int, height: Int, rotationDegrees: Int) {
+        gl.updateViewfinder(width, height, rotationDegrees)
     }
 
     /**
-     * Create the encoder and feed its input surface to the camera alongside
-     * the preview. Encoder output flows into [ingest]; fatal capture failures
-     * are reported to [onError] (from which the caller tears the broadcast
-     * down).
+     * Create the encoder and attach its input surface to the GL pipeline;
+     * [portrait] fixes the encoded shape (and its uprighting rotation) at
+     * go-live. Encoder output flows into [ingest]; fatal capture failures are
+     * reported to [onError].
      */
-    fun startEncoding(settings: BroadcastSettings, ingest: MediaIngest, onError: (String) -> Unit, clock: SessionClock) {
+    fun startEncoding(
+        settings: BroadcastSettings,
+        portrait: Boolean,
+        ingest: MediaIngest,
+        onError: (String) -> Unit,
+        clock: SessionClock,
+    ) {
         if (encoding) return
         val preset = settings.preset
-        val (outWidth, outHeight) = settings.aspect.outputSize(preset.height)
+        val (outWidth, outHeight) = preset.outputSize(portrait)
         val selection = EncoderCapabilities.select(outWidth, outHeight, settings.videoBitrateBps)
         if (selection == null) {
             onError("No H.264 encoder available on this device")
@@ -111,7 +132,6 @@ class CameraStreamer(context: Context) {
         // onOutputFormatChanged (SPS/PPS config) can fire as soon as start()
         // returns, and must not be dropped because ingest was still null.
         encoder = created
-        encoderSize = selection.size
         this.ingest = ingest
         this.onError = onError
         try {
@@ -126,7 +146,6 @@ class CameraStreamer(context: Context) {
             )
         } catch (e: VideoEncoderException) {
             encoder = null
-            encoderSize = null
             this.ingest = null
             this.onError = null
             created.stop()
@@ -137,24 +156,69 @@ class CameraStreamer(context: Context) {
         this.clock = clock
         lastFrameWallMs = SystemClock.elapsedRealtimeNanos() / 1_000_000L
         startHeartbeat()
-        reconfigure()
+        // Upright the sensor frame for the hold captured at go-live; the
+        // encoded canvas matches, so viewers see upright portrait or
+        // landscape pixels without any rotation metadata.
+        val upright = ((controller.sensorOrientation() - displayRotationDegrees) % 360 + 360) % 360
+        gl.setEncoder(created.inputSurface(), selection.size.width, selection.size.height, upright)
+        ensureCamera()
     }
 
     /**
-     * Stop encoding and return the camera to the UI preview. The encoder is
-     * released only once the camera no longer targets its surface (the
-     * controller's onConfigured), so no surface is destroyed mid-capture.
+     * Stop encoding: detach the GL target first — its callback is the point
+     * where releasing the codec can no longer race an in-flight draw.
      */
     fun stopEncoding() {
         if (!encoding) return
         encoding = false
         val stale = encoder
-        val staleSize = encoderSize
         encoder = null
-        encoderSize = null
         ingest = null
         onError = null
-        reconfigure { stale?.stop() }
+        gl.removeEncoder {
+            stale?.stop()
+            releaseCameraIfIdle()
+        }
+    }
+
+    /** Start the camera toward the GL pipeline exactly once. */
+    private fun ensureCamera() {
+        if (cameraStarted) return
+        cameraStarted = true
+        // One sensor-native landscape buffer feeds everything downstream;
+        // each render target crops/scales it independently on the GPU.
+        val size = controller.chooseOutputSize(16f / 9f) ?: run {
+            Log.w(TAG, "no camera output sizes; falling back to 1280x720")
+            1280 to 720
+        }
+        gl.start(size.first, size.second) { surface ->
+            cameraSurface = surface
+            controller.configure(surface) { message -> reportCaptureError(message) }
+        }
+    }
+
+    private fun releaseCameraIfIdle() {
+        if (encoding || viewfinderAttached) return
+        cameraStarted = false
+        controller.configure(null) { }
+    }
+
+    /** Request an IDR so viewers resync promptly after a reconnect. */
+    fun requestKeyframe() {
+        encoder?.requestKeyframe()
+    }
+
+    /** Release the camera and GL pipeline; safe after teardown. */
+    fun close() {
+        heartbeat.shutdownNow()
+        encoder?.stop()
+        encoder = null
+        gl.close()
+        controller.close()
+    }
+
+    private fun reportCaptureError(message: String) {
+        onError?.invoke(message)
     }
 
     private fun startHeartbeat() {
@@ -189,20 +253,6 @@ class CameraStreamer(context: Context) {
         sink.pushVideo(dtsMs, true, keyframe)
     }
 
-    /** Request an IDR so viewers resync promptly after a reconnect. */
-    fun requestKeyframe() {
-        encoder?.requestKeyframe()
-    }
-
-    /** Release the camera; safe after teardown. */
-    fun close() {
-        heartbeat.shutdownNow()
-        encoder?.stop()
-        encoder = null
-        encoderSize = null
-        controller.close()
-    }
-
     private val encoderListener = object : VideoEncoder.Listener {
         override fun onCodecConfig(avcDecoderConfig: ByteArray) {
             ingest?.configureCodecs(avcDecoderConfig, null)
@@ -229,19 +279,5 @@ class CameraStreamer(context: Context) {
             // leg hiccupped is exactly the behavior we are engineering out.
             Log.e(TAG, "(non-fatal) $message")
         }
-    }
-
-    private fun reconfigure(onConfigured: () -> Unit = {}) {
-        controller.configure(
-            preview = preview,
-            previewSize = previewSize,
-            encoder = encoder?.inputSurface(),
-            encoderSize = encoderSize,
-            onError = { message ->
-                onError?.invoke(message)
-                onConfigured()
-            },
-            onConfigured = onConfigured,
-        )
     }
 }

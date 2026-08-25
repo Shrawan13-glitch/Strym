@@ -34,7 +34,7 @@ class SessionConfigMappingTest {
             latencyMode = LatencyMode.AGGRESSIVE,
         )
 
-        val config = buildSessionConfig(settings)
+        val config = buildSessionConfig(settings, portrait = false)
 
         assertEquals("rtmp://ingest.example.tv:1936", config.destination.url)
         assertEquals("live", config.destination.app)

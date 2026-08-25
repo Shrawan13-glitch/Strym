@@ -32,16 +32,17 @@ private const val TAG = "StreamController"
  * Map the user's broadcast settings onto the frozen core config. Mirrors the
  * core's `default_session_config` with a finite reconnect budget, so
  * [StreamPhase.EXHAUSTED] is reachable and the UI owns the "try again" /
- * "give up" decision.
+ * "give up" decision. [portrait] is the device's hold at go-live: it fixes
+ * the encoded shape (and the GL pipeline's uprighting) for the broadcast.
  */
-fun buildSessionConfig(settings: BroadcastSettings): SessionConfig {
+fun buildSessionConfig(settings: BroadcastSettings, portrait: Boolean): SessionConfig {
     val destination = RtmpDestination(
         url = settings.serverUrl.trim(),
         app = settings.app.trim(),
         streamKey = settings.streamKey.trim(),
         timeoutMs = 0uL,
     )
-    val (outWidth, outHeight) = settings.aspect.outputSize(settings.preset.height)
+    val (outWidth, outHeight) = settings.preset.outputSize(portrait)
     val stream = StreamInfo(
         width = outWidth.toUInt(),
         height = outHeight.toUInt(),
@@ -121,28 +122,29 @@ class StreamController(
      * Create a session from [settings] and start it. Returns false (with the
      * reason in [uiState]) when the config or the start is rejected.
      */
-    suspend fun goLive(settings: BroadcastSettings): Boolean = controlMutex.withLock {
-        if (gateway != null) return@withLock false
-        val config = buildSessionConfig(settings)
-        _uiState.value = UiState(phase = StreamPhase.CONNECTING, hasSession = true)
-        val created = try {
-            sessionFactory.create(config, listener)
-        } catch (e: StreamException) {
-            _uiState.value = UiState(errorMessage = resolveError(e.toUserError()))
-            return@withLock false
+    suspend fun goLive(settings: BroadcastSettings, portrait: Boolean): Boolean =
+        controlMutex.withLock {
+            if (gateway != null) return@withLock false
+            val config = buildSessionConfig(settings, portrait)
+            _uiState.value = UiState(phase = StreamPhase.CONNECTING, hasSession = true)
+            val created = try {
+                sessionFactory.create(config, listener)
+            } catch (e: StreamException) {
+                _uiState.value = UiState(errorMessage = resolveError(e.toUserError()))
+                return@withLock false
+            }
+            gateway = created
+            originNanos = clockNanos()
+            try {
+                created.start()
+            } catch (e: StreamException) {
+                gateway = null
+                withContext(Dispatchers.IO) { created.close() }
+                _uiState.value = UiState(errorMessage = resolveError(e.toUserError()))
+                return@withLock false
+            }
+            true
         }
-        gateway = created
-        originNanos = clockNanos()
-        try {
-            created.start()
-        } catch (e: StreamException) {
-            gateway = null
-            withContext(Dispatchers.IO) { created.close() }
-            _uiState.value = UiState(errorMessage = resolveError(e.toUserError()))
-            return@withLock false
-        }
-        true
-    }
 
     /**
      * Re-arm after [StreamPhase.EXHAUSTED], or relaunch a session whose

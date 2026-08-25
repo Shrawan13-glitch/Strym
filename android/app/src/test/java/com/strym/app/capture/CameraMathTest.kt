@@ -2,7 +2,9 @@ package com.strym.app.capture
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.math.abs
 
 class CameraMathTest {
 
@@ -40,62 +42,93 @@ class CameraMathTest {
         assertNull(choosePreviewSize(listOf(1280 to 720), 0f))
     }
 
-    // --- computePreviewTransform --------------------------------------------
+    // --- glFillCropTransform -------------------------------------------------
 
     @Test
-    fun portraitRotatesTheLandscapeBufferUpright() {
-        // Rear sensor mounted 90°; device upright (display rotation 0°).
-        // 720x1280 footprint in 1080x2400 view → fill scale 1.875 (fills height).
-        val transform = computePreviewTransform(90, 0, 1280, 720, 1080, 2400)
-        assertEquals(90, transform.rotationDegrees)
-        assertEquals(1.875f, transform.scale, 1e-5f)
+    fun identityWhenBufferMatchesViewExactly() {
+        val m = glFillCropTransform(0, 1280, 720, 1280, 720)
+        // Buffer top-left → NDC (-1, 1); bottom-right → (1, -1).
+        assertEquals(-1f, applyTransform(m, 0f, 0f).first, 1e-4f)
+        assertEquals(1f, applyTransform(m, 0f, 0f).second, 1e-4f)
+        assertEquals(1f, applyTransform(m, 1280f, 720f).first, 1e-4f)
+        assertEquals(-1f, applyTransform(m, 1280f, 720f).second, 1e-4f)
     }
 
     @Test
-    fun landscapeNeedsNoRotation() {
-        // 1280x720 footprint in 2400x1080 view → fill scale 1.875 (fills width).
-        val transform = computePreviewTransform(90, 90, 1280, 720, 2400, 1080)
-        assertEquals(0, transform.rotationDegrees)
-        assertEquals(1.875f, transform.scale, 1e-5f)
+    fun portraitUprightsTheLandscapeBufferAndCoversTheView() {
+        // Rear sensor mounted 90°, device upright: the 1920x1080 frame must
+        // be rotated a quarter turn and fill a tall 1080x2400 window.
+        val m = glFillCropTransform(90, 1920, 1080, 1080, 2400)
+        // The buffer center lands on the view center.
+        assertEquals(0f, applyTransform(m, 960f, 540f).first, 1e-4f)
+        assertEquals(0f, applyTransform(m, 960f, 540f).second, 1e-4f)
+        // Clockwise quarter turn: the buffer's top-left corner ends up past
+        // the right screen edge and flush with the top.
+        val (tlX, tlY) = applyTransform(m, 0f, 0f)
+        assertTrue("TL x $tlX should overflow right", tlX > 1f)
+        assertEquals(1f, tlY, 1e-3f)
+        // Full coverage: every view corner is inside the rotated, scaled frame.
+        assertCoversView(m, 1080, 2400)
+    }
+
+    @Test
+    fun landscapeHoldsNeedNoRotation() {
+        val m = glFillCropTransform(0, 1280, 720, 2400, 1350)
+        assertCoversView(m, 1280, 720)
+        // No distortion: one pixel of frame maps to the same distance on
+        // every axis of the view.
+        assertUniformScale(m, viewWidth = 2400, viewHeight = 1350)
     }
 
     @Test
     fun reversePortraitRotatesOneEighty() {
-        val transform = computePreviewTransform(90, 180, 1280, 720, 1080, 2400)
-        assertEquals(270, transform.rotationDegrees)
-        assertEquals(1.875f, transform.scale, 1e-5f)
+        val m = glFillCropTransform(180, 1920, 1080, 1080, 2400)
+        // Point reflection: the buffer's top-left lands past the right edge,
+        // flush with the bottom.
+        val (x, y) = applyTransform(m, 0f, 0f)
+        assertTrue("TL x $x should overflow right", x > 1f)
+        assertEquals(-1f, y, 1e-3f)
+        assertCoversView(m, 1920, 1080)
     }
 
     @Test
-    fun fillScaleUsesTheBindingAxis() {
-        // Buffer already matches the view's aspect: uniform 1:1.
-        val transform = computePreviewTransform(0, 0, 1280, 720, 1280, 720)
-        assertEquals(0, transform.rotationDegrees)
-        assertEquals(1f, transform.scale, 1e-5f)
+    fun arbitraryAnglesSnapToQuarterTurns() {
+        val snapped = glFillCropTransform(270, 1920, 1080, 1080, 2400)
+        val exact = glFillCropTransform(-90, 1920, 1080, 1080, 2400)
+        assertTrue(snapped.contentEquals(exact))
     }
 
     @Test
     fun degenerateSizesFallBackToIdentity() {
-        val transform = computePreviewTransform(90, 0, 0, 720, 1080, 2400)
-        assertEquals(PreviewTransform(0, 1f), transform)
+        val m = glFillCropTransform(90, 0, 720, 1080, 2400)
+        val (x, y) = applyTransform(m, 123f, 456f)
+        assertEquals(123f, x, 1e-6f)
+        assertEquals(456f, y, 1e-6f)
     }
 
-    // --- largestCrop ---------------------------------------------------------
-
-    @Test
-    fun sensorCropMatchesTheStreamAspect() {
-        // 4:3 sensor array → largest centered 16:9 region.
-        val crop = largestCrop(4032, 3024, 16f / 9f)
-        assertEquals(CropRect(0, 378, 4032, 2268), crop)
+    /** Every corner of the view (in NDC) must be covered by the mapped frame. */
+    private fun assertCoversView(m: FloatArray, bufferWidth: Int, bufferHeight: Int) {
+        // For axis-aligned 90° mappings it suffices that the transformed
+        // buffer quad's bounds contain the whole [-1,1]² view rect.
+        val corners = listOf(
+            applyTransform(m, 0f, 0f),
+            applyTransform(m, bufferWidth.toFloat(), 0f),
+            applyTransform(m, 0f, bufferHeight.toFloat()),
+            applyTransform(m, bufferWidth.toFloat(), bufferHeight.toFloat()),
+        )
+        val xs = corners.map { it.first }
+        val ys = corners.map { it.second }
+        assertTrue("x bounds [$xs] must span the view", xs.min()!! <= -1f + 1e-3 && xs.max()!! >= 1f - 1e-3)
+        assertTrue("y bounds [$ys] must span the view", ys.min()!! <= -1f + 1e-3 && ys.max()!! >= 1f - 1e-3)
     }
 
-    @Test
-    fun fullFrameWhenAspectsAlreadyMatch() {
-        assertEquals(CropRect(0, 0, 1920, 1080), largestCrop(1920, 1080, 16f / 9f))
-    }
-
-    @Test
-    fun degenerateAspectReturnsTheWholeArray() {
-        assertEquals(CropRect(0, 0, 1000, 500), largestCrop(1000, 500, 0f))
+    /** NDC axes differ in scale (vw ≠ vh), so compare in pixel units. */
+    private fun assertUniformScale(m: FloatArray, viewWidth: Int, viewHeight: Int) {
+        val scaleX = abs(m[0]) * viewWidth / 2f
+        val scaleY = abs(m[5]) * viewHeight / 2f
+        assertEquals(scaleX, scaleY, 1e-4f)
+        // Axis-aligned: no cross-axis leakage.
+        assertTrue(abs(m[4]) * viewWidth / 2f < 1e-6)
+        assertTrue(abs(m[1]) * viewHeight / 2f < 1e-6)
     }
 }

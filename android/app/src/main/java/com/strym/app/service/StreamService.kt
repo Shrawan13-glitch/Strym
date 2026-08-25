@@ -7,6 +7,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.content.res.Configuration
 import android.net.wifi.WifiManager
 import android.os.Binder
 import android.os.Build
@@ -154,7 +155,12 @@ class StreamService : LifecycleService() {
         // at least STARTED, and the foreground promotion below builds on it.
         startService(Intent(this, StreamService::class.java))
         scope.launch {
-            if (!controller.goLive(settings)) {
+            // One question decides the whole broadcast shape — the hold at
+            // go-live (the UI locks orientation while live, so it cannot
+            // change under us).
+            val portrait =
+                resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT
+            if (!controller.goLive(settings, portrait)) {
                 stopSelf()
                 return@launch
             }
@@ -171,7 +177,7 @@ class StreamService : LifecycleService() {
                 types,
             )
             val clock = SessionClock()
-            camera.startEncoding(settings, controller, ::captureFailed, clock)
+            camera.startEncoding(settings, portrait, controller, ::captureFailed, clock)
             if (settings.audioEnabled) {
                 audio.start(controller, ::captureFailed, clock)
             }

@@ -7,7 +7,6 @@ import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
-import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.params.OutputConfiguration
 import android.hardware.camera2.params.SessionConfiguration
 import android.os.Build
@@ -29,18 +28,16 @@ private const val MAX_REOPEN_ATTEMPTS = 5
 private const val REOPEN_BASE_DELAY_MS = 300L
 
 /**
- * Raw Camera2 capture-session manager for the dual-surface path.
+ * Raw Camera2 capture-session manager with exactly one output: the GL
+ * pipeline's [SurfaceTexture] surface ([GlStreamer]). The viewfinder and the
+ * H.264 encoder are both fed *from* that pipeline, so the camera never needs
+ * to know about either — going live no longer reconfigures the capture
+ * session at all, and idle vs live is purely which render targets are
+ * attached downstream.
  *
- * The camera writes to *both* outputs at once — the UI's viewfinder surface
- * and the H.264 encoder's input surface — so the preview keeps running while
- * the stream is live (no frozen last frame). Idle holds only the preview
- * surface; going live adds the encoder surface and the session is recreated,
- * which re-fires [CameraStreamer]'s "configured" callback so the swap is safe.
- *
- * All state is confined to a dedicated [HandlerThread]; surface swaps are
- * serialized through it and never race the CameraDevice. The encoder surface
- * stays bound until the replacement session is active, so releasing the codec
- * can never destroy a surface the camera still targets.
+ * All state is confined to a dedicated [HandlerThread]. A bounded reopen
+ * policy survives lock screens and OEM privacy pauses without killing the
+ * broadcast; [CameraStreamer]'s heartbeat holds the ingest meanwhile.
  */
 class CameraController(private val context: Context) {
 
@@ -55,8 +52,14 @@ class CameraController(private val context: Context) {
 
     private var camera: CameraDevice? = null
     private var session: CameraCaptureSession? = null
+
+    /** The surface the camera must feed; null releases the camera. */
+    @Volatile
+    private var target: Surface? = null
+
+    /** The surface the active session was built for. */
+    private var boundSurface: Surface? = null
     private var creating = false
-    private var dirty = false
     private var consecutiveFailures = 0
 
     /** Reopen attempts since the last successful session configuration. */
@@ -65,62 +68,35 @@ class CameraController(private val context: Context) {
     /** True while a delayed reopen is queued on [cameraHandler]. */
     private var reopenPending = false
 
-    @Volatile
-    private var preview: Surface? = null
-    private var previewSize: Size? = null
-
-    @Volatile
-    private var encoder: Surface? = null
-    private var encoderSize: Size? = null
-
     private var onError: ((String) -> Unit)? = null
-    private var pendingConfigured: () -> Unit = {}
 
     /**
-     * Request the camera feed both [preview] and [encoder] (either may be
-     * null). [onConfigured] runs once the new surface set is active — after a
-     * live/idle swap it is the point at which the previous encoder surface may
-     * be released. Calling with both null releases the camera.
+     * Point the camera at [surface] (null stops capture). [onError] reports
+     * fatal problems.
      */
-    fun configure(
-        preview: Surface?,
-        previewSize: Size?,
-        encoder: Surface?,
-        encoderSize: Size?,
-        onError: (String) -> Unit,
-        onConfigured: () -> Unit,
-    ) {
+    fun configure(surface: Surface?, onError: (String) -> Unit) {
         cameraHandler.post {
             this.onError = onError
-            pendingConfigured = onConfigured
-            this.preview = preview
-            this.previewSize = previewSize
-            this.encoder = encoder
-            this.encoderSize = encoderSize
-            dirty = true
-            applySurfaces()
+            target = surface
+            applyTarget()
         }
     }
 
     /** Tear everything down and stop the camera thread. Idempotent. */
     fun close() {
         cameraHandler.post {
-            dirty = false
-            pendingConfigured = {}
-            creating = false
+            target = null
             session?.close()
             session = null
             camera?.close()
             camera = null
-            preview = null
-            encoder = null
             onError = null
         }
         cameraThread.quitSafely()
     }
 
-    /** A supported viewfinder size near [aspect], ≤ [maxWidth] wide. */
-    fun choosePreviewSize(aspect: Float, maxWidth: Int = PREVIEW_MAX_WIDTH): Size? {
+    /** A supported camera-output size near [aspect], ≤ [maxWidth] wide. */
+    fun chooseOutputSize(aspect: Float, maxWidth: Int = PREVIEW_MAX_WIDTH): Size? {
         val map = characteristics()
             ?.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return null
         val sizes = map.getOutputSizes(SurfaceTexture::class.java)
@@ -137,37 +113,22 @@ class CameraController(private val context: Context) {
     fun sensorOrientation(): Int = characteristics()
         ?.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
 
-    // --- session state machine (all on cameraHandler) -----------------------
+    // --- state machine (all on cameraHandler) --------------------------------
 
-    private fun applySurfaces() {
-        val desired = preview != null || encoder != null
-        if (!desired) {
-            if (creating) return // settle the in-flight creation, then tear down
+    private fun applyTarget() {
+        if (target == null) {
+            if (creating) return // settle the in-flight creation; onClosed cleans up
             session?.close()
             session = null
+            boundSurface = null
             camera?.close()
             camera = null
-            dirty = false
-            fireConfigured()
             return
         }
-        if (camera == null) {
-            openCamera()
-            return
+        when {
+            camera == null -> openCamera()
+            session == null && !creating -> createSession()
         }
-        if (session != null) {
-            if (!dirty) return
-            // Surface set changed: close so onClosed recreates with the new set.
-            dirty = false
-            val old = session
-            session = null
-            old?.close()
-            return
-        }
-        if (!creating) {
-            createSession()
-        }
-        // else: a creation is in flight; onConfigured re-enters with dirty set.
     }
 
     private fun openCamera() {
@@ -192,7 +153,7 @@ class CameraController(private val context: Context) {
      * running meanwhile — [CameraStreamer]'s heartbeat holds the ingest.
      */
     private fun scheduleReopen(why: String): Boolean {
-        if (preview == null && encoder == null) return false
+        if (target == null) return false
         if (reopenAttempts >= MAX_REOPEN_ATTEMPTS) {
             reopenAttempts = 0
             return false
@@ -205,8 +166,7 @@ class CameraController(private val context: Context) {
         cameraHandler.postDelayed(
             {
                 reopenPending = false
-                dirty = true
-                applySurfaces()
+                if (target != null && camera == null) openCamera()
             },
             delay,
         )
@@ -216,7 +176,7 @@ class CameraController(private val context: Context) {
     private val cameraCallback = object : CameraDevice.StateCallback() {
         override fun onOpened(device: CameraDevice) {
             camera = device
-            applySurfaces()
+            if (session == null && !creating) createSession()
         }
 
         override fun onDisconnected(device: CameraDevice) {
@@ -240,36 +200,27 @@ class CameraController(private val context: Context) {
 
     private fun createSession() {
         val device = camera ?: return
+        val surface = target ?: return
         creating = true
-        val configs = buildList {
-            preview?.let { add(OutputConfiguration(it)) }
-            encoder?.let { add(OutputConfiguration(it)) }
-        }
         try {
             if (Build.VERSION.SDK_INT >= 28) {
                 device.createCaptureSession(
                     SessionConfiguration(
                         SessionConfiguration.SESSION_REGULAR,
-                        configs,
+                        listOf(OutputConfiguration(surface)),
                         executor,
                         sessionCallback,
                     ),
                 )
             } else {
-                device.createCaptureSession(
-                    configs.map { it.surface },
-                    sessionCallback,
-                    cameraHandler,
-                )
+                device.createCaptureSession(listOf(surface), sessionCallback, cameraHandler)
             }
         } catch (e: CameraAccessException) {
             creating = false
             notifyError("Could not configure the camera: ${e.message}")
-            fireConfigured()
         } catch (e: IllegalArgumentException) {
             creating = false
-            notifyError("The camera rejected the preview surface: ${e.message}")
-            fireConfigured()
+            notifyError("The camera rejected the output surface: ${e.message}")
         }
     }
 
@@ -279,8 +230,8 @@ class CameraController(private val context: Context) {
             consecutiveFailures = 0
             reopenAttempts = 0
             session = capturing
+            boundSurface = target
             startRepeating(capturing)
-            applySurfaces()
         }
 
         override fun onConfigureFailed(capturing: CameraCaptureSession) {
@@ -288,62 +239,29 @@ class CameraController(private val context: Context) {
             runCatching { capturing.close() }
             if (++consecutiveFailures >= MAX_SESSION_FAILURES) {
                 notifyError("The camera could not be attached to the stream")
-                fireConfigured()
-            } else {
-                applySurfaces()
+            } else if (camera != null && target != null) {
+                createSession()
             }
         }
 
         override fun onClosed(capturing: CameraCaptureSession) {
             if (session === capturing) session = null
             creating = false
-            applySurfaces()
+            if (target != null && boundSurface != target) createSession()
         }
     }
 
     private fun startRepeating(capturing: CameraCaptureSession) {
         val device = camera ?: return
-        // The encoder leads while live: its aspect is what viewers get. The
-        // HAL adjusts the crop per stream (centered), so the preview surface
-        // — possibly a different aspect — still sees an undistorted, nested
-        // view of the same scene. Idle: the preview's own aspect.
-        val aspect = (encoderSize ?: previewSize)?.let {
-            it.width.toFloat() / it.height
-        } ?: 0f
         val request = try {
-            // The encoder surface needs a fixed, steady frame rate and record
-            // semantics; TEMPLATE_PREVIEW is tuned for the viewfinder and on
-            // many devices never drives a codec surface at all.
-            val template = if (encoder != null) {
-                CameraDevice.TEMPLATE_RECORD
-            } else {
-                CameraDevice.TEMPLATE_PREVIEW
-            }
-            device.createCaptureRequest(template).apply {
-                preview?.let { addTarget(it) }
-                encoder?.let { addTarget(it) }
-                if (aspect > 0f) {
-                    set(CaptureRequest.SCALER_CROP_REGION, cropRegion(aspect))
-                }
+            device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+                addTarget(boundSurface ?: return)
             }
         } catch (e: CameraAccessException) {
             notifyError("Could not start the camera: ${e.message}")
             return
         }
         runCatching { capturing.setRepeatingRequest(request.build(), null, cameraHandler) }
-    }
-
-    private fun cropRegion(aspect: Float): android.graphics.Rect {
-        val array = characteristics()?.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
-            ?: return android.graphics.Rect(0, 0, 1, 1)
-        val crop = largestCrop(array.width(), array.height(), aspect)
-        return android.graphics.Rect(crop.x, crop.y, crop.x + crop.width, crop.y + crop.height)
-    }
-
-    private fun fireConfigured() {
-        val callback = pendingConfigured
-        pendingConfigured = {}
-        callback()
     }
 
     private fun notifyError(message: String) {
