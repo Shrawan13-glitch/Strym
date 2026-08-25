@@ -31,7 +31,7 @@ private const val HEARTBEAT_INTERVAL_MS = 1_000L
  * is live, so capture is safe with the screen off and no background-camera
  * access is held otherwise.
  */
-class CameraStreamer(context: Context) {
+class CameraStreamer(private val context: Context) {
 
     private val controller = CameraController(context)
     private val gl = GlStreamer()
