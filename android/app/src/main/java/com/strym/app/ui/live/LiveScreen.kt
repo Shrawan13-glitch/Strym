@@ -302,16 +302,17 @@ private fun StatCell(label: String, value: String) {
  * the service's camera streamer, which runs the Camera2 session and keeps the
  * viewfinder *and* the encoder's input surface bound at once — so the preview
  * keeps showing live video while streaming instead of freezing on the last
- * frame. The buffer is sensor-native (landscape); a rotation + fit transform
- * makes it upright and shows the full frame — preview now matches exactly what
- * the encoder sends (no extra zoom/crop). Passing the surface (and holding the
+ * frame. The buffer is sensor-native (landscape); a rotation + fill transform
+ * makes it upright and full-screen — the stock-camera look, never distorted or
+ * sideways. The sensor orientation is read fresh on every transform update:
+ * capturing it at composition time races service binding and left the
+ * viewfinder permanently sideways. Passing the surface (and holding the
  * service's camera open) only happens while the UI is visible or a stream is
  * live, so capture survives the screen turning off.
  */
 @Composable
 fun CameraPreview(service: StreamService?, modifier: Modifier = Modifier) {
     val context = LocalContext.current
-    val sensorOrientation = remember { service?.camera?.sensorOrientation() ?: 0 }
     val textureView = remember(context) { TextureView(context) }
     val display = remember(context) { context.display }
     var chosenSize by remember { mutableStateOf<Size?>(null) }
@@ -319,6 +320,10 @@ fun CameraPreview(service: StreamService?, modifier: Modifier = Modifier) {
     fun updateTransform() {
         val bufferWidth = chosenSize?.width ?: return
         val bufferHeight = chosenSize?.height ?: return
+        // Read fresh every time: the service (and with it the camera streamer)
+        // may bind after this composable first composes, and a value frozen
+        // then would rotate by the wrong amount (the "sideways preview" bug).
+        val sensorOrientation = service?.camera?.sensorOrientation() ?: return
         val transform = computePreviewTransform(
             sensorOrientation = sensorOrientation,
             deviceRotationDegrees = (display?.rotation ?: 0) * 90,
@@ -338,9 +343,7 @@ fun CameraPreview(service: StreamService?, modifier: Modifier = Modifier) {
     DisposableEffect(service) {
         val listener = object : TextureView.SurfaceTextureListener {
             override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
-                val isPortrait = (display?.rotation ?: 0) % 2 == 0
-                val size = service?.camera?.chooseNaturalPreviewSize(isPortrait)
-                    ?: service?.camera?.choosePreviewSize()
+                val size = service?.camera?.choosePreviewSize()
                 if (size != null) surface.setDefaultBufferSize(size.width, size.height)
                 chosenSize = size
                 service?.camera?.setPreviewSurface(Surface(surface), size)
@@ -348,9 +351,7 @@ fun CameraPreview(service: StreamService?, modifier: Modifier = Modifier) {
             }
 
             override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) {
-                val isPortrait = (display?.rotation ?: 0) % 2 == 0
-                val size = service?.camera?.chooseNaturalPreviewSize(isPortrait)
-                    ?: service?.camera?.choosePreviewSize()
+                val size = service?.camera?.choosePreviewSize()
                 if (size != null) surface.setDefaultBufferSize(size.width, size.height)
                 chosenSize = size
                 updateTransform()

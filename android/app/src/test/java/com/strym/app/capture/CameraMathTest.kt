@@ -45,29 +45,29 @@ class CameraMathTest {
     @Test
     fun portraitRotatesTheLandscapeBufferUpright() {
         // Rear sensor mounted 90°; device upright (display rotation 0°).
-        // 720x1280 footprint in 1080x2400 view → fit scale 1.5 (full frame visible).
+        // 720x1280 footprint in 1080x2400 view → fill scale 1.875 (fills height).
         val transform = computePreviewTransform(90, 0, 1280, 720, 1080, 2400)
         assertEquals(90, transform.rotationDegrees)
-        assertEquals(1.5f, transform.scale, 1e-5f)
+        assertEquals(1.875f, transform.scale, 1e-5f)
     }
 
     @Test
     fun landscapeNeedsNoRotation() {
-        // 1280x720 footprint in 2400x1080 view → fit scale 1.5.
+        // 1280x720 footprint in 2400x1080 view → fill scale 1.875 (fills width).
         val transform = computePreviewTransform(90, 90, 1280, 720, 2400, 1080)
         assertEquals(0, transform.rotationDegrees)
-        assertEquals(1.5f, transform.scale, 1e-5f)
+        assertEquals(1.875f, transform.scale, 1e-5f)
     }
 
     @Test
     fun reversePortraitRotatesOneEighty() {
         val transform = computePreviewTransform(90, 180, 1280, 720, 1080, 2400)
         assertEquals(270, transform.rotationDegrees)
-        assertEquals(1.5f, transform.scale, 1e-5f)
+        assertEquals(1.875f, transform.scale, 1e-5f)
     }
 
     @Test
-    fun fitScaleUsesTheBindingAxis() {
+    fun fillScaleUsesTheBindingAxis() {
         // Buffer already matches the view's aspect: uniform 1:1.
         val transform = computePreviewTransform(0, 0, 1280, 720, 1280, 720)
         assertEquals(0, transform.rotationDegrees)

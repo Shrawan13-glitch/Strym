@@ -303,15 +303,9 @@ class CameraController(private val context: Context) {
 
     private fun startRepeating(capturing: CameraCaptureSession) {
         val device = camera ?: return
-        // When streaming, the encoder's 16:9 is what matters for viewers — keep
-        // that crop for the stream. Preview stays natural (full sensor) and is
-        // displayed FIT, so it never forces the stream to inherit a portrait
-        // preview crop. When idle, use the preview's own aspect.
-        val aspect = when {
-            encoderSize != null -> encoderSize!!.width.toFloat() / encoderSize!!.height
-            previewSize != null -> previewSize!!.width.toFloat() / previewSize!!.height
-            else -> 0f
-        }
+        val aspect = (previewSize ?: encoderSize)?.let {
+            it.width.toFloat() / it.height
+        } ?: 0f
         val request = try {
             // The encoder surface needs a fixed, steady frame rate and record
             // semantics; TEMPLATE_PREVIEW is tuned for the viewfinder and on

@@ -71,14 +71,8 @@ class CameraStreamer(context: Context) {
 
     private var lastHeartbeatWallMs = 0L
 
-    /** A supported viewfinder size near the 16:9 encoder aspect (legacy). */
+    /** A supported viewfinder size near the 16:9 encoder aspect. */
     fun choosePreviewSize(): Size? = controller.choosePreviewSize(PREVIEW_ASPECT)
-
-    /** Natural preview size matching how the device is held — like stock camera. */
-    fun chooseNaturalPreviewSize(isPortrait: Boolean): Size? {
-        val aspect = if (isPortrait) 9f / 16f else PREVIEW_ASPECT
-        return controller.choosePreviewSize(aspect)
-    }
 
     /** Sensor orientation in degrees; the UI rotates its viewfinder with it. */
     fun sensorOrientation(): Int = controller.sensorOrientation()
