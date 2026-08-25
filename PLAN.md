@@ -225,13 +225,21 @@ Done:
 
 Remaining:
 
-- [ ] **Rotation decision (made).** The zero-copy surface path cannot rotate
-      pixels, so the *encoded* output stays sensor-native landscape. Decision:
-      accept landscape for the stream, and rotate only the on-screen viewfinder
-      upright via `TextureView.setTransform` (no GL pass). A portrait/upright
-      stream would require GL rotation — revisit only if the product demands it.
+- [x] **Rotation decision (revised).** The zero-copy surface path cannot rotate
+      pixels, and the TextureView-matrix viewfinder it forced on us was a
+      regression chain (sideways / squeeze / zoom per device). Replaced with a
+      GL pipeline (`GlStreamer`): the camera feeds one SurfaceTexture; every
+      frame is drawn — rotated upright, fill-cropped — into the viewfinder and
+      (while live) the encoder input surface from one pure matrix builder.
+      Portrait *and* landscape broadcasts now carry genuinely upright pixels;
+      the shape is decided once at go-live from the device hold, which the UI
+      locks while live. Going live attaches a render target and no longer
+      reconfigures the camera session; the aspect selector and all
+      SCALER_CROP_REGION math are gone. Device validation still pending:
 - [ ] **Exit criteria (device).** Host-side RTMP ingest (`scripts/ingest-server.sh`)
-      + `ffprobe`: `h264`, IDR cadence ≈2 s, correct resolution, monotonic PTS.
+      + `ffprobe`: `h264`, IDR cadence ≈2 s, correct resolution, monotonic PTS;
+      plus on-device checks that the GL viewfinder is upright and undistorted
+      in portrait and landscape holds, live and idle.
 
 Exit criteria: host-side RTMP ingest server receives a stream; `ffprobe`
 shows `h264` with IDR cadence ≈2 s and correct resolution; A/V PTS monotonic.
