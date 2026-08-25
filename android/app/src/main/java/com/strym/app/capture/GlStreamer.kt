@@ -229,8 +229,10 @@ class GlStreamer {
             GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
             GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE,
         )
-        surfaceTexture = SurfaceTexture(texture, false, handler).apply {
-            setOnFrameAvailableListener { drawFrame() }
+        surfaceTexture = SurfaceTexture(texture, false).apply {
+            // No-Handler listener fires on a binder thread; every frame is
+            // posted onto the GL thread, which owns updateTexImage.
+            setOnFrameAvailableListener { handler.post { drawFrame() } }
         }
         buildProgram()
     }
