@@ -346,7 +346,10 @@ class GlStreamer {
             return
         }
         GLES20.glViewport(0, 0, target.width, target.height)
-        GLES20.glClearColor(0f, 0f, 0f, 1f)
+        // TEMP DIAGNOSTIC: red clear proves whether GL output reaches the
+        // screen (red screen = compositing OK, sampling broken; black =
+        // SurfaceView never composited).
+        GLES20.glClearColor(1f, 0f, 0f, 1f)
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
         val size = bufferSize ?: return
         GLES20.glUniformMatrix4fv(
