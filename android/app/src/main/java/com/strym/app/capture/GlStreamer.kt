@@ -336,6 +336,9 @@ class GlStreamer {
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, texture)
         GLES20.glUniform1i(texLocation, 0)
         GLES20.glUniformMatrix4fv(stLocation, 1, false, stMatrix, 0)
+        if (frameCount == 1) {
+            Log.i(TAG, "ST=${stMatrix.joinToString { "%.2f".format(it) }}")
+        }
         quad.position(0)
         GLES20.glVertexAttribPointer(posLocation, 2, GLES20.GL_FLOAT, false, 4 * FLOAT_BYTES, quad)
         GLES20.glEnableVertexAttribArray(posLocation)
@@ -362,13 +365,14 @@ class GlStreamer {
         GLES20.glClearColor(1f, 0f, 0f, 1f)
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
         val size = bufferSize ?: return
-        GLES20.glUniformMatrix4fv(
-            mvpLocation, 1, false,
-            glFillCropTransform(
-                target.rotationDegrees, size.first, size.second, target.width, target.height,
-            ),
-            0,
+        val mvp = glFillCropTransform(
+            target.rotationDegrees, size.first, size.second, target.width, target.height,
         )
+        if (frameCount == 1) {
+            Log.i(TAG, "MVP rot=${target.rotationDegrees} buf=${size.first}x${size.second} " +
+                "view=${target.width}x${target.height} = ${mvp.joinToString { "%.3f".format(it) }}")
+        }
+        GLES20.glUniformMatrix4fv(mvpLocation, 1, false, mvp, 0)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
         val drawError = GLES20.glGetError()
         surfaceTexture?.let { EGLExt.eglPresentationTimeANDROID(display, target.egl, it.timestamp) }
