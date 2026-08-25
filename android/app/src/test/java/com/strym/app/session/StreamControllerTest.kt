@@ -113,7 +113,7 @@ class StreamControllerTest {
         val factory = FakeSessionFactory()
         val controller = controller(factory)
 
-        assertTrue(controller.goLive(TEST_SETTINGS))
+        assertTrue(controller.goLive(TEST_SETTINGS, portrait = false))
         val connecting = controller.uiState.value
         assertEquals(StreamPhase.CONNECTING, connecting.phase)
         assertTrue(connecting.hasSession)
@@ -131,7 +131,7 @@ class StreamControllerTest {
         factory.createException = StreamException.InvalidConfig("app must not be empty")
         val controller = controller(factory)
 
-        assertFalse(controller.goLive(TEST_SETTINGS))
+        assertFalse(controller.goLive(TEST_SETTINGS, portrait = false))
         val state = controller.uiState.value
         assertEquals(StreamPhase.IDLE, state.phase)
         assertFalse(state.hasSession)
@@ -144,7 +144,7 @@ class StreamControllerTest {
         factory.nextStartException = StreamException.InvalidState("session already running")
         val controller = controller(factory)
 
-        assertFalse(controller.goLive(TEST_SETTINGS))
+        assertFalse(controller.goLive(TEST_SETTINGS, portrait = false))
         assertTrue(factory.created.single().closed)
         val state = controller.uiState.value
         assertFalse(state.hasSession)
@@ -155,7 +155,7 @@ class StreamControllerTest {
     fun failedInitialConnectShowsErrorAndRetryRelaunches() = runTest {
         val factory = FakeSessionFactory()
         val controller = controller(factory)
-        assertTrue(controller.goLive(TEST_SETTINGS))
+        assertTrue(controller.goLive(TEST_SETTINGS, portrait = false))
 
         factory.lastListener!!.onStateChanged(
             SessionState.IDLE,
@@ -175,7 +175,7 @@ class StreamControllerTest {
     fun reconnectingShowsDetailAndLiveClearsIt() = runTest {
         val factory = FakeSessionFactory()
         val controller = controller(factory)
-        assertTrue(controller.goLive(TEST_SETTINGS))
+        assertTrue(controller.goLive(TEST_SETTINGS, portrait = false))
         val listener = factory.lastListener!!
 
         listener.onStateChanged(SessionState.LIVE, null)
@@ -193,7 +193,7 @@ class StreamControllerTest {
     fun exhaustedOffersRetryAndGiveUp() = runTest {
         val factory = FakeSessionFactory()
         val controller = controller(factory)
-        assertTrue(controller.goLive(TEST_SETTINGS))
+        assertTrue(controller.goLive(TEST_SETTINGS, portrait = false))
         val listener = factory.lastListener!!
 
         listener.onStateChanged(SessionState.LIVE, null)
@@ -217,7 +217,7 @@ class StreamControllerTest {
     fun statsCallbackPublishesSnapshot() = runTest {
         val factory = FakeSessionFactory()
         val controller = controller(factory)
-        assertTrue(controller.goLive(TEST_SETTINGS))
+        assertTrue(controller.goLive(TEST_SETTINGS, portrait = false))
 
         factory.lastListener!!.onStats(testStats(bitrateOutBps = 2_400_000.0))
         val stats = controller.uiState.value.stats
@@ -231,7 +231,7 @@ class StreamControllerTest {
     fun stopSessionClosesGatewayAndIgnoresLateCallbacks() = runTest {
         val factory = FakeSessionFactory()
         val controller = controller(factory)
-        assertTrue(controller.goLive(TEST_SETTINGS))
+        assertTrue(controller.goLive(TEST_SETTINGS, portrait = false))
         val listener = factory.lastListener!!
         listener.onStateChanged(SessionState.LIVE, null)
 
@@ -249,8 +249,8 @@ class StreamControllerTest {
     fun goLiveWhileActiveIsRejected() = runTest {
         val factory = FakeSessionFactory()
         val controller = controller(factory)
-        assertTrue(controller.goLive(TEST_SETTINGS))
-        assertFalse(controller.goLive(TEST_SETTINGS))
+        assertTrue(controller.goLive(TEST_SETTINGS, portrait = false))
+        assertFalse(controller.goLive(TEST_SETTINGS, portrait = false))
         assertEquals(1, factory.created.size)
     }
 
@@ -261,7 +261,7 @@ class StreamControllerTest {
         assertEquals(0L, controller.nowMs())
 
         nanos = 3_000_000_000L
-        assertTrue(controller.goLive(TEST_SETTINGS))
+        assertTrue(controller.goLive(TEST_SETTINGS, portrait = false))
         nanos = 4_500_000_000L
         assertEquals(1_500L, controller.nowMs())
     }
@@ -277,7 +277,7 @@ class StreamControllerTest {
     fun pushVideoForwardsFramesToTheActiveSession() = runTest {
         val factory = FakeSessionFactory()
         val controller = controller(factory)
-        assertTrue(controller.goLive(TEST_SETTINGS))
+        assertTrue(controller.goLive(TEST_SETTINGS, portrait = false))
         val gateway = factory.created.single()
 
         controller.pushVideo(0, true, byteArrayOf(0, 0, 0, 1, 0x65))
@@ -296,7 +296,7 @@ class StreamControllerTest {
     fun pushVideoStopsAfterStopSession() = runTest {
         val factory = FakeSessionFactory()
         val controller = controller(factory)
-        assertTrue(controller.goLive(TEST_SETTINGS))
+        assertTrue(controller.goLive(TEST_SETTINGS, portrait = false))
         val gateway = factory.created.single()
 
         controller.stopSession()
@@ -308,7 +308,7 @@ class StreamControllerTest {
     fun pushAudioForwardsFramesToTheActiveSession() = runTest {
         val factory = FakeSessionFactory()
         val controller = controller(factory)
-        assertTrue(controller.goLive(TEST_SETTINGS))
+        assertTrue(controller.goLive(TEST_SETTINGS, portrait = false))
         val gateway = factory.created.single()
 
         controller.pushAudio(21, byteArrayOf(1, 2, 3))
@@ -327,7 +327,7 @@ class StreamControllerTest {
     fun pushAudioStopsAfterStopSession() = runTest {
         val factory = FakeSessionFactory()
         val controller = controller(factory)
-        assertTrue(controller.goLive(TEST_SETTINGS))
+        assertTrue(controller.goLive(TEST_SETTINGS, portrait = false))
         val gateway = factory.created.single()
 
         controller.stopSession()
@@ -339,7 +339,7 @@ class StreamControllerTest {
     fun configureCodecsPassesThroughAndSwallowsRejection() = runTest {
         val factory = FakeSessionFactory()
         val controller = controller(factory)
-        assertTrue(controller.goLive(TEST_SETTINGS))
+        assertTrue(controller.goLive(TEST_SETTINGS, portrait = false))
         val gateway = factory.created.single()
 
         val avc = byteArrayOf(0x01, 0x64, 0x00, 0x1F)
@@ -367,7 +367,7 @@ class StreamControllerTest {
             "formatted: ${error.detail}"
         }
 
-        assertFalse(controller.goLive(TEST_SETTINGS))
+        assertFalse(controller.goLive(TEST_SETTINGS, portrait = false))
         assertEquals("formatted: app must not be empty", controller.uiState.value.errorMessage)
     }
 
