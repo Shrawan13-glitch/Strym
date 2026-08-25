@@ -19,6 +19,7 @@ private val KEY_SERVER_URL = stringPreferencesKey("server_url")
 private val KEY_APP = stringPreferencesKey("app")
 private val KEY_STREAM_KEY = stringPreferencesKey("stream_key")
 private val KEY_PRESET = stringPreferencesKey("video_preset")
+private val KEY_ASPECT = stringPreferencesKey("stream_aspect")
 private val KEY_VIDEO_BITRATE = intPreferencesKey("video_bitrate_bps")
 private val KEY_LATENCY = stringPreferencesKey("latency_mode")
 private val KEY_AUDIO_ENABLED = booleanPreferencesKey("audio_enabled")
@@ -52,6 +53,9 @@ class SettingsRepository(context: Context) {
             app = prefs[KEY_APP] ?: "live",
             streamKey = prefs[KEY_STREAM_KEY] ?: "",
             preset = preset,
+            aspect = prefs[KEY_ASPECT]
+                ?.let { name -> StreamAspect.entries.firstOrNull { it.name == name } }
+                ?: StreamAspect.LANDSCAPE_16_9,
             videoBitrateBps = prefs[KEY_VIDEO_BITRATE] ?: preset.defaultBitrateBps,
             latencyMode = prefs[KEY_LATENCY]
                 ?.let { name -> LatencyMode.entries.firstOrNull { it.name == name } }
@@ -66,6 +70,7 @@ class SettingsRepository(context: Context) {
             KEY_APP to settings.app,
             KEY_STREAM_KEY to settings.streamKey,
             KEY_PRESET to settings.preset.name,
+            KEY_ASPECT to settings.aspect.name,
             KEY_VIDEO_BITRATE to settings.videoBitrateBps,
             KEY_LATENCY to settings.latencyMode.name,
             KEY_AUDIO_ENABLED to settings.audioEnabled,

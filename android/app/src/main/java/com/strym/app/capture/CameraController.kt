@@ -303,7 +303,11 @@ class CameraController(private val context: Context) {
 
     private fun startRepeating(capturing: CameraCaptureSession) {
         val device = camera ?: return
-        val aspect = (previewSize ?: encoderSize)?.let {
+        // The encoder leads while live: its aspect is what viewers get. The
+        // HAL adjusts the crop per stream (centered), so the preview surface
+        // — possibly a different aspect — still sees an undistorted, nested
+        // view of the same scene. Idle: the preview's own aspect.
+        val aspect = (encoderSize ?: previewSize)?.let {
             it.width.toFloat() / it.height
         } ?: 0f
         val request = try {

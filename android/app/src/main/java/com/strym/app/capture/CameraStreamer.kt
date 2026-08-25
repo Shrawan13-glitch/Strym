@@ -10,7 +10,6 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 private const val TAG = "StrymCameraStreamer"
-private const val PREVIEW_ASPECT = 16f / 9f
 
 /** Video is considered stalled when no encoded frame arrived for this long. */
 private const val VIDEO_STALE_MS = 2_000L
@@ -71,8 +70,8 @@ class CameraStreamer(context: Context) {
 
     private var lastHeartbeatWallMs = 0L
 
-    /** A supported viewfinder size near the 16:9 encoder aspect. */
-    fun choosePreviewSize(): Size? = controller.choosePreviewSize(PREVIEW_ASPECT)
+    /** A supported viewfinder size near the stream aspect. */
+    fun choosePreviewSize(aspect: Float): Size? = controller.choosePreviewSize(aspect)
 
     /** Sensor orientation in degrees; the UI rotates its viewfinder with it. */
     fun sensorOrientation(): Int = controller.sensorOrientation()
@@ -98,13 +97,14 @@ class CameraStreamer(context: Context) {
     fun startEncoding(settings: BroadcastSettings, ingest: MediaIngest, onError: (String) -> Unit, clock: SessionClock) {
         if (encoding) return
         val preset = settings.preset
-        val selection = EncoderCapabilities.select(preset.width, preset.height, settings.videoBitrateBps)
+        val (outWidth, outHeight) = settings.aspect.outputSize(preset.height)
+        val selection = EncoderCapabilities.select(outWidth, outHeight, settings.videoBitrateBps)
         if (selection == null) {
             onError("No H.264 encoder available on this device")
             return
         }
-        if (selection.size.width != preset.width || selection.size.height != preset.height) {
-            Log.w(TAG, "preset ${preset.width}x${preset.height} clamped to ${selection.size}")
+        if (selection.size.width != outWidth || selection.size.height != outHeight) {
+            Log.w(TAG, "requested ${outWidth}x$outHeight clamped to ${selection.size}")
         }
         val created = VideoEncoder(encoderListener, clock)
         // Wire the listener target before starting the encoder: its first

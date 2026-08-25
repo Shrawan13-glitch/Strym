@@ -2,6 +2,7 @@ package com.strym.app.ui.live
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.graphics.Matrix
 import android.graphics.SurfaceTexture
 import android.os.Build
@@ -11,12 +12,14 @@ import android.view.TextureView
 import android.view.View
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -43,6 +46,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -84,7 +88,7 @@ fun LiveScreen(
     var showBatteryDialog by remember { mutableStateOf(false) }
 
     Box(Modifier.fillMaxSize()) {
-        CameraPreview(service, Modifier.fillMaxSize())
+        CameraPreview(service, settings.aspect.ratio, Modifier.fillMaxSize())
 
         Row(
             modifier = Modifier
@@ -298,24 +302,31 @@ private fun StatCell(label: String, value: String) {
 }
 
 /**
- * Live viewfinder over raw Camera2. The [TextureView]'s surface is handed to
- * the service's camera streamer, which runs the Camera2 session and keeps the
- * viewfinder *and* the encoder's input surface bound at once — so the preview
- * keeps showing live video while streaming instead of freezing on the last
- * frame. The buffer is sensor-native (landscape); a rotation + fill transform
- * makes it upright and full-screen — the stock-camera look, never distorted or
- * sideways. The sensor orientation is read fresh on every transform update:
- * capturing it at composition time races service binding and left the
- * viewfinder permanently sideways. Passing the surface (and holding the
- * service's camera open) only happens while the UI is visible or a stream is
- * live, so capture survives the screen turning off.
+ * Live viewfinder over raw Camera2, the stock-camera way: a centered window
+ * of the selected stream aspect (rotated upright for the current hold) on a
+ * black background — content is never distorted or sideways. The [TextureView]
+ * fills that window, and the sensor orientation is read fresh on every
+ * transform update: capturing it at composition time races service binding
+ * and left the viewfinder permanently sideways. The window's surface is
+ * handed to the service's camera streamer, which keeps the viewfinder *and*
+ * the encoder's input surface bound at once — the preview keeps showing live
+ * video while streaming. Passing the surface (and holding the service's
+ * camera open) only happens while the UI is visible or a stream is live, so
+ * capture survives the screen turning off.
  */
 @Composable
-fun CameraPreview(service: StreamService?, modifier: Modifier = Modifier) {
+fun CameraPreview(service: StreamService?, streamAspect: Float, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val textureView = remember(context) { TextureView(context) }
     val display = remember(context) { context.display }
+    val configuration = LocalConfiguration.current
     var chosenSize by remember { mutableStateOf<Size?>(null) }
+
+    // Window shape in screen space: the stream frame rotated upright for the
+    // hold (a 16:9 frame held portrait fills a tall 9:16 window, like every
+    // stock camera's aspect selector).
+    val portraitHold = configuration.orientation == Configuration.ORIENTATION_PORTRAIT
+    val windowAspect = if (portraitHold) 1f / streamAspect else streamAspect
 
     fun updateTransform() {
         val bufferWidth = chosenSize?.width ?: return
@@ -343,7 +354,7 @@ fun CameraPreview(service: StreamService?, modifier: Modifier = Modifier) {
     DisposableEffect(service) {
         val listener = object : TextureView.SurfaceTextureListener {
             override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
-                val size = service?.camera?.choosePreviewSize()
+                val size = service?.camera?.choosePreviewSize(streamAspect)
                 if (size != null) surface.setDefaultBufferSize(size.width, size.height)
                 chosenSize = size
                 service?.camera?.setPreviewSurface(Surface(surface), size)
@@ -351,7 +362,7 @@ fun CameraPreview(service: StreamService?, modifier: Modifier = Modifier) {
             }
 
             override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) {
-                val size = service?.camera?.choosePreviewSize()
+                val size = service?.camera?.choosePreviewSize(streamAspect)
                 if (size != null) surface.setDefaultBufferSize(size.width, size.height)
                 chosenSize = size
                 updateTransform()
@@ -376,5 +387,13 @@ fun CameraPreview(service: StreamService?, modifier: Modifier = Modifier) {
         }
     }
 
-    AndroidView(factory = { textureView }, modifier = modifier)
+    Box(modifier.background(Color.Black)) {
+        Box(
+            modifier = Modifier
+                .align(Alignment.Center)
+                .aspectRatio(windowAspect),
+        ) {
+            AndroidView(factory = { textureView }, modifier = Modifier.fillMaxSize())
+        }
+    }
 }

@@ -51,6 +51,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.strym.app.R
 import com.strym.app.settings.BroadcastSettings
 import com.strym.app.settings.BatteryPrompt
+import com.strym.app.settings.StreamAspect
 import com.strym.app.settings.VideoPreset
 import com.strym.app.ui.live.formatBitrate
 import uniffi.stream_ffi.LatencyMode
@@ -157,6 +158,25 @@ fun SettingsScreen(
                         ),
                     ) {
                         Text(preset.label)
+                    }
+                }
+            }
+
+            Text(
+                text = stringResource(R.string.settings_aspect),
+                style = MaterialTheme.typography.titleSmall,
+            )
+            SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                StreamAspect.entries.forEachIndexed { index, aspect ->
+                    SegmentedButton(
+                        selected = draft.aspect == aspect,
+                        onClick = { draft = draft.copy(aspect = aspect) },
+                        shape = SegmentedButtonDefaults.itemShape(
+                            index = index,
+                            count = StreamAspect.entries.size,
+                        ),
+                    ) {
+                        Text(aspect.label)
                     }
                 }
             }

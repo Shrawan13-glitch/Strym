@@ -41,9 +41,10 @@ fun buildSessionConfig(settings: BroadcastSettings): SessionConfig {
         streamKey = settings.streamKey.trim(),
         timeoutMs = 0uL,
     )
+    val (outWidth, outHeight) = settings.aspect.outputSize(settings.preset.height)
     val stream = StreamInfo(
-        width = settings.preset.width.toUInt(),
-        height = settings.preset.height.toUInt(),
+        width = outWidth.toUInt(),
+        height = outHeight.toUInt(),
         framerate = settings.preset.framerate,
         videoBitrateBps = settings.videoBitrateBps.toUInt(),
         audioBitrateBps = BroadcastSettings.AUDIO_BITRATE_BPS.toUInt(),
