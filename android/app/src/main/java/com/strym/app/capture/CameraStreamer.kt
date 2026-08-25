@@ -1,10 +1,14 @@
 package com.strym.app.capture
 
 import android.content.Context
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
 import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
 import android.view.WindowManager
+import androidx.camera.core.Preview
+import androidx.lifecycle.LifecycleOwner
 import com.strym.app.settings.BroadcastSettings
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -19,22 +23,28 @@ private const val HEARTBEAT_INTERVAL_MS = 1_000L
 /**
  * Coordinates camera → GL → encoder → session.
  *
- * The camera feeds exactly one consumer: [GlStreamer]'s SurfaceTexture. The
- * GL pipeline then draws every frame into both the UI's viewfinder surface
- * and (while live) the H.264 encoder's input surface — rotated upright and
- * fill-cropped per target, so the preview always matches the stream and
- * portrait *or* landscape broadcasts carry genuinely upright pixels. Going
- * live attaches one render target; it never reconfigures the camera session,
- * and stopping detaches it before the codec is released.
+ * CameraX owns the camera (see [CameraXEngine]): the UI's viewfinder is a
+ * PreviewView the engine binds directly, and the GL pipeline ([GlStreamer])
+ * receives the same camera through its own Preview use case. Going live
+ * attaches the encoder as a GL render target — rotated upright and
+ * fill-cropped for the hold captured at go-live, so viewers receive genuinely
+ * upright portrait or landscape pixels. It never reconfigures the camera
+ * session's use-case set beyond adding the GL feed, and stopping detaches it
+ * before the codec is released.
  *
- * The camera stays open only while a preview surface is attached or a stream
- * is live, so capture is safe with the screen off and no background-camera
+ * The camera stays bound only while the viewfinder is shown or a stream is
+ * live, so capture is safe with the screen off and no background-camera
  * access is held otherwise.
  */
-class CameraStreamer(private val context: Context) {
+class CameraStreamer(context: Context, lifecycleOwner: LifecycleOwner) {
 
-    private val controller = CameraController(context)
     private val gl = GlStreamer()
+    private val engine = CameraXEngine(context, lifecycleOwner, gl)
+    private val cameraManager =
+        context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+
+    /** Rear camera id, for characteristics queries only (CameraX opens it). */
+    private val cameraId: String? by lazy { findRearCameraId() }
 
     /**
      * Display rotation, read lazily: a Service context has no display and
@@ -46,12 +56,6 @@ class CameraStreamer(private val context: Context) {
         @Suppress("DEPRECATION")
         return (wm?.defaultDisplay?.rotation ?: Surface.ROTATION_0) * 90
     }
-
-    @Volatile
-    private var viewfinderAttached = false
-
-    private var cameraStarted = false
-    private var cameraSurface: Surface? = null
 
     private var encoder: VideoEncoder? = null
     private var ingest: MediaIngest? = null
@@ -87,30 +91,22 @@ class CameraStreamer(private val context: Context) {
 
     private var lastHeartbeatWallMs = 0L
 
-    /** Sensor orientation in degrees; the UI rotates its viewfinder with it. */
-    fun sensorOrientation(): Int = controller.sensorOrientation()
+    /** Sensor orientation in degrees of clockwise rotation to upright. */
+    fun sensorOrientation(): Int = cameraId?.let { id ->
+        runCatching {
+            cameraManager.getCameraCharacteristics(id)
+                .get(CameraCharacteristics.SENSOR_ORIENTATION)
+        }.getOrNull()
+    } ?: 0
 
-    /**
-     * The UI's viewfinder surface. Passing null while idle releases the
-     * camera — with no foreground service running, Android blocks background
-     * camera access, so the camera only stays open while the UI is visible or
-     * a stream is live.
-     */
-    fun setPreviewSurface(surface: Surface?, width: Int, height: Int, rotationDegrees: Int) {
-        if (surface != null) {
-            viewfinderAttached = true
-            gl.setViewfinder(surface, width, height, rotationDegrees)
-            ensureCamera()
-        } else {
-            viewfinderAttached = false
-            gl.setViewfinder(null, 0, 0, 0)
-            releaseCameraIfIdle()
-        }
+    /** Show the UI viewfinder; CameraX handles every display transform. */
+    fun attachPreview(provider: Preview.SurfaceProvider) {
+        engine.attachDisplay(provider)
     }
 
-    /** Refresh the viewfinder's size/rotation (display rotated or resized). */
-    fun updatePreviewTransform(width: Int, height: Int, rotationDegrees: Int) {
-        gl.updateViewfinder(width, height, rotationDegrees)
+    /** Stop showing the viewfinder; a live broadcast keeps its GL feed. */
+    fun detachPreview() {
+        engine.detachDisplay(keepCapture = encoding)
     }
 
     /**
@@ -168,10 +164,11 @@ class CameraStreamer(private val context: Context) {
         startHeartbeat()
         // Upright the sensor frame for the hold captured at go-live; the
         // encoded canvas matches, so viewers see upright portrait or
-        // landscape pixels without any rotation metadata.
-        val upright = ((controller.sensorOrientation() - displayRotationDegrees()) % 360 + 360) % 360
+        // landscape pixels without any rotation metadata. (Pre-rotating HALs
+        // get their half-turn from the GL pipeline's ST classification.)
+        val upright = ((sensorOrientation() - displayRotationDegrees()) % 360 + 360) % 360
         gl.setEncoder(created.inputSurface(), selection.size.width, selection.size.height, upright)
-        ensureCamera()
+        engine.ensureCapture()
     }
 
     /**
@@ -187,30 +184,8 @@ class CameraStreamer(private val context: Context) {
         onError = null
         gl.removeEncoder {
             stale?.stop()
-            releaseCameraIfIdle()
+            engine.releaseCapture()
         }
-    }
-
-    /** Start the camera toward the GL pipeline exactly once. */
-    private fun ensureCamera() {
-        if (cameraStarted) return
-        cameraStarted = true
-        // One sensor-native landscape buffer feeds everything downstream;
-        // each render target crops/scales it independently on the GPU.
-        val size = controller.chooseOutputSize(16f / 9f)
-        val width = size?.width ?: 1280
-        val height = size?.height ?: 720
-        if (size == null) Log.w(TAG, "no camera output sizes; falling back to ${width}x${height}")
-        gl.start(width, height) { surface ->
-            cameraSurface = surface
-            controller.configure(surface) { message -> reportCaptureError(message) }
-        }
-    }
-
-    private fun releaseCameraIfIdle() {
-        if (encoding || viewfinderAttached) return
-        cameraStarted = false
-        controller.configure(null) { }
     }
 
     /** Request an IDR so viewers resync promptly after a reconnect. */
@@ -218,17 +193,24 @@ class CameraStreamer(private val context: Context) {
         encoder?.requestKeyframe()
     }
 
-    /** Release the camera and GL pipeline; safe after teardown. */
+    /** Release the GL pipeline and camera bindings; safe after teardown. */
     fun close() {
         heartbeat.shutdownNow()
         encoder?.stop()
         encoder = null
         gl.close()
-        controller.close()
+        engine.release()
     }
 
-    private fun reportCaptureError(message: String) {
-        onError?.invoke(message)
+    private fun findRearCameraId(): String? {
+        val ids = runCatching { cameraManager.cameraIdList }.getOrNull() ?: return null
+        return ids.firstOrNull { id ->
+            runCatching {
+                cameraManager.getCameraCharacteristics(id)
+                    .get(CameraCharacteristics.LENS_FACING) ==
+                    CameraCharacteristics.LENS_FACING_BACK
+            }.getOrDefault(false)
+        } ?: ids.firstOrNull()
     }
 
     private fun startHeartbeat() {

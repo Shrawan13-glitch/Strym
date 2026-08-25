@@ -13,6 +13,7 @@ import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import androidx.camera.core.Preview
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.lifecycle.LifecycleService
@@ -36,10 +37,9 @@ import kotlinx.coroutines.launch
  * Keeps the broadcast alive with the screen off. Owns the [StreamController]
  * (one session per service lifetime), the [CameraStreamer] (camera → encoder →
  * session) and the [AudioRecorder] (mic → AAC encoder → session); the UI binds
- * to read `uiState`, hand over its viewfinder surface, and trigger go-live /
- * stop.
+ * to read `uiState`, hand over its viewfinder, and trigger go-live / stop.
  *
- * A [LifecycleService] so CameraX can bind its use cases to this service's
+ * A [LifecycleService] so CameraX binds its use cases to this service's
  * lifecycle instead of the activity's — capture then keeps running when the
  * screen turns off (the foreground type enforces the camera permission, which
  * the UI's permission gate guarantees before [goLive] is reachable).
@@ -71,7 +71,7 @@ class StreamService : LifecycleService() {
             RealSessionFactory,
             resolveError = { error -> getString(error.stringRes, error.detail) },
         )
-        camera = CameraStreamer(this)
+        camera = CameraStreamer(this, this)
         audio = AudioRecorder()
         scope.launch {
             var previous: StreamPhase? = null
@@ -144,6 +144,16 @@ class StreamService : LifecycleService() {
     override fun onBind(intent: Intent): IBinder {
         super.onBind(intent)
         return binder
+    }
+
+    /** Show the UI viewfinder; CameraX owns every display transform. */
+    fun attachPreview(provider: Preview.SurfaceProvider) {
+        camera.attachPreview(provider)
+    }
+
+    /** Stop showing the viewfinder; a live broadcast keeps its GL feed. */
+    fun detachPreview() {
+        camera.detachPreview()
     }
 
     /** Create + start the session and capture, then promote to the foreground. */

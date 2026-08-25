@@ -1,45 +1,49 @@
 package com.strym.app.capture
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.abs
 
 class CameraMathTest {
 
-    // --- choosePreviewSize --------------------------------------------------
+    // --- stQuirkCompensationDegrees -------------------------------------------
 
     @Test
-    fun picksLargestExactAspectMatchWithinBudget() {
-        val sizes = listOf(
-            640 to 480,
-            1920 to 1080,
-            1280 to 720,
+    fun standardFlipStNeedsNoCompensation() {
+        // The Android-standard camera ST: (s,t) -> (s, 1−t), a pure v-flip.
+        val st = floatArrayOf(
+            1f, 0f, 0f, 0f,
+            0f, -1f, 0f, 0f,
+            0f, 0f, 1f, 0f,
+            0f, 1f, 0f, 1f,
         )
-        assertEquals(1920 to 1080, choosePreviewSize(sizes, 16f / 9f))
+        assertEquals(0, stQuirkCompensationDegrees(st))
     }
 
     @Test
-    fun maxWidthClampsToTheBestSupportedCandidate() {
-        val sizes = listOf(
-            640 to 480,
-            854 to 480,
-            1280 to 720,
+    fun identityStNeedsNoCompensation() {
+        val st = FloatArray(16)
+        st[0] = 1f; st[5] = 1f; st[10] = 1f; st[15] = 1f
+        assertEquals(0, stQuirkCompensationDegrees(st))
+    }
+
+    @Test
+    fun transposingStGetsHalfTurnCompensation() {
+        // Dumped on a CPH2613IN (OnePlus): (s,t) -> (1−t, 1−s). Its HAL
+        // pre-rotates buffer content, so the standard formula overshoots.
+        val st = floatArrayOf(
+            0f, -1f, 0f, 0f,
+            -1f, 0f, 0f, 0f,
+            0f, 0f, 1f, 0f,
+            1f, 1f, 0f, 1f,
         )
-        assertEquals(854 to 480, choosePreviewSize(sizes, 16f / 9f, maxWidth = 1000))
+        assertEquals(180, stQuirkCompensationDegrees(st))
     }
 
     @Test
-    fun fallsBackToClosestAspectWhenNothingIsInRange() {
-        val sizes = listOf(320 to 240, 640 to 360)
-        assertEquals(640 to 360, choosePreviewSize(sizes, 16f / 9f, maxWidth = 400))
-    }
-
-    @Test
-    fun emptyOrDegenerateInputsReturnNull() {
-        assertNull(choosePreviewSize(emptyList(), 16f / 9f))
-        assertNull(choosePreviewSize(listOf(1280 to 720), 0f))
+    fun degenerateStFallsBackToNoCompensation() {
+        assertEquals(0, stQuirkCompensationDegrees(FloatArray(16)))
     }
 
     // --- glFillCropTransform (input: clip-space quad, ±1) --------------------

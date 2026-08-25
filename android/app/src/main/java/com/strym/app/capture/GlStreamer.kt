@@ -5,7 +5,6 @@ import android.opengl.EGL14
 import android.opengl.EGLConfig
 import android.opengl.EGLContext
 import android.opengl.EGLDisplay
-import android.opengl.EGLExt
 import android.opengl.EGLSurface
 import android.opengl.GLES11Ext
 import android.opengl.GLES20
@@ -23,21 +22,19 @@ private const val TAG = "StrymGl"
 private const val EGL_RECORDABLE_ANDROID = 0x3142
 
 /**
- * The single GL pipeline between the camera and every consumer of its frames
- * — the stock-camera/RootEncoder architecture. The camera writes sensor-native
- * frames into one [SurfaceTexture]; each frame is drawn as a textured quad
- * into whichever render targets are attached:
- *
- *  - the **viewfinder** (a UI surface): rotated upright for the current hold,
- *    fill-cropped to the screen,
- *  - the **encoder** input surface (while live): rotated upright for the hold
- *    captured at go-live, fill-cropped to the encoded resolution — so viewers
- *    receive genuinely upright portrait *or* landscape pixels.
+ * The GL pipeline between the camera and the H.264 encoder — the on-screen
+ * viewfinder is CameraX's job now ([androidx.camera.view.PreviewView]); this
+ * class exists solely to upright and fill-crop sensor-native frames into the
+ * encoder's input surface, so viewers receive genuinely upright portrait or
+ * landscape pixels without rotation metadata.
  *
  * Rotation, crop, and scale all happen here, on the GPU, from one source of
- * truth (`CameraMath.glFillCropTransform`) — which is why the preview and the
- * stream can no longer disagree. Owns a dedicated thread + EGL context; all
- * GL work is confined to it.
+ * truth (`CameraMath.glFillCropTransform`), with the camera's SurfaceTexture
+ * matrix applied to the sampling coordinates exactly as the driver provides
+ * it — plus a half-turn correction when the ST classifier detects a
+ * pre-rotating HAL (`CameraMath.stQuirkCompensationDegrees`).
+ *
+ * Owns a dedicated thread + EGL context; all GL work is confined to it.
  */
 class GlStreamer {
 
@@ -69,50 +66,32 @@ class GlStreamer {
     private var bufferSize: Pair<Int, Int>? = null
 
     @Volatile
-    private var viewfinder: Target? = null
-
-    @Volatile
     private var encoderTarget: Target? = null
 
-    /**
-     * Create the EGL world and the camera-facing [SurfaceTexture]. [onReady]
-     * receives the surface to hand to Camera2 plus the chosen buffer size.
-     */
-    fun start(bufferWidth: Int, bufferHeight: Int, onReady: (Surface) -> Unit) {
-        handler.post {
-            try {
-                ensureInit()
-                surfaceTexture?.setDefaultBufferSize(bufferWidth, bufferHeight)
-                bufferSize = bufferWidth to bufferHeight
-                val st = surfaceTexture ?: error("no SurfaceTexture")
-                cameraSurface?.release()
-                cameraSurface = Surface(st)
-                onReady(cameraSurface!!)
-            } catch (t: Throwable) {
-                Log.e(TAG, "GL start failed", t)
-            }
-        }
-    }
+    /** Half-turn correction for pre-rotating HALs; decided from the first frame's ST. */
+    @Volatile
+    private var stQuirkDegrees = 0
 
-    /** Attach or replace the on-screen viewfinder target. Null detaches. */
-    fun setViewfinder(surface: Surface?, width: Int, height: Int, rotationDegrees: Int) {
+    /**
+     * Create the EGL world and the camera-facing [SurfaceTexture] sized to
+     * [width]x[height], then hand the surface to [onReady]. Idempotent:
+     * CameraX may request surfaces repeatedly across rebinds — the texture is
+     * reused and only the buffer size is updated. The previous surface is not
+     * released here; CameraX may still hold it until its replacement is
+     * provided (the wrapped SurfaceTexture is shared, so nothing leaks but a
+     * thin Surface wrapper).
+     */
+    fun obtainCameraSurface(width: Int, height: Int, onReady: (Surface) -> Unit) {
         handler.post {
             runCatching {
                 ensureInit()
-                Log.i(TAG, "viewfinder attach=${
-                    surface != null} ${width}x${height} rot=$rotationDegrees")
-                viewfinder?.let { destroyTarget(it) }
-                viewfinder = surface?.let { makeTarget(it, width, height, rotationDegrees) }
+                surfaceTexture?.setDefaultBufferSize(width, height)
+                bufferSize = width to height
+                val st = surfaceTexture ?: error("no SurfaceTexture")
+                cameraSurface = Surface(st)
+                Log.i(TAG, "camera surface ${width}x$height")
+                onReady(cameraSurface!!)
             }.onFailure(::logFatal)
-        }
-    }
-
-    /** Update geometry of the attached viewfinder without recreating anything. */
-    fun updateViewfinder(width: Int, height: Int, rotationDegrees: Int) {
-        viewfinder?.let {
-            it.width = width
-            it.height = height
-            it.rotationDegrees = rotationDegrees
         }
     }
 
@@ -144,8 +123,6 @@ class GlStreamer {
     /** Tear everything down. Idempotent. */
     fun close() {
         handler.post {
-            viewfinder?.let(::destroyTarget)
-            viewfinder = null
             encoderTarget?.let(::destroyTarget)
             encoderTarget = null
             cameraSurface?.release()
@@ -322,8 +299,8 @@ class GlStreamer {
     private fun drawFrame() {
         val st = surfaceTexture ?: return
         val size = bufferSize ?: return
-        if (viewfinder == null && encoderTarget == null) {
-            if (frameLog++ % 60 == 0) Log.w(TAG, "frame dropped: no render targets attached")
+        if (encoderTarget == null) {
+            if (frameLog++ % 60 == 0) Log.w(TAG, "frame dropped: no encoder target attached")
             return
         }
         frameCount++
@@ -333,10 +310,14 @@ class GlStreamer {
             Log.w(TAG, "updateTexImage failed", t)
             return
         }
-        if (frameCount % 60 == 1) Log.i(TAG, "frame #$frameCount → view=${viewfinder != null} enc=${encoderTarget != null}")
+        if (frameCount % 60 == 1) Log.i(TAG, "frame #$frameCount enc=${encoderTarget != null}")
         st.getTransformMatrix(stMatrix)
         if (frameCount == 1) {
-            Log.i(TAG, "TEMP ST: " + stMatrix.joinToString(prefix="[", postfix="]") { "%.3f".format(it) })
+            stQuirkDegrees = stQuirkCompensationDegrees(stMatrix)
+            Log.i(
+                TAG,
+                "camera ST family: ${if (stQuirkDegrees == 0) "standard" else "transposing (+$stQuirkDegrees°)"}",
+            )
         }
         GLES20.glUseProgram(program)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
@@ -353,7 +334,6 @@ class GlStreamer {
             GLES20.glVertexAttribPointer(uvLocation, 2, GLES20.GL_FLOAT, false, 4 * FLOAT_BYTES, quad)
             GLES20.glEnableVertexAttribArray(uvLocation)
         }
-        viewfinder?.let(::drawInto)
         encoderTarget?.let(::drawInto)
         GLES20.glDisableVertexAttribArray(posLocation)
         GLES20.glDisableVertexAttribArray(uvLocation)
@@ -368,10 +348,11 @@ class GlStreamer {
         GLES20.glClearColor(0f, 0f, 0f, 1f)
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
         val size = bufferSize ?: return
+        val rotation = target.rotationDegrees + stQuirkDegrees
         GLES20.glUniformMatrix4fv(
             mvpLocation, 1, false,
             glFillCropTransform(
-                target.rotationDegrees, size.first, size.second, target.width, target.height,
+                rotation, size.first, size.second, target.width, target.height,
             ),
             0,
         )
@@ -380,7 +361,7 @@ class GlStreamer {
         if (!EGL14.eglSwapBuffers(display, target.egl)) {
             Log.w(TAG, "swapBuffers failed: ${EGL14.eglGetError()}")
         } else if (frameCount % 60 == 1) {
-            Log.i(TAG, "swapped ${size.first}x${size.second} → ${target.width}x${target.height} rot=${target.rotationDegrees}")
+            Log.i(TAG, "swapped ${size.first}x${size.second} → ${target.width}x${target.height} rot=$rotation")
         }
     }
 

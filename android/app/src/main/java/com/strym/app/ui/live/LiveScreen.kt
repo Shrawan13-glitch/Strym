@@ -8,11 +8,9 @@ import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.os.Build
-import android.view.SurfaceHolder
-import android.view.SurfaceView
-import android.view.View
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.view.PreviewView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -52,6 +50,9 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.strym.app.R
 import com.strym.app.service.StreamService
@@ -319,68 +320,37 @@ private fun StatCell(label: String, value: String) {
 }
 
 /**
- * Live viewfinder over the GL pipeline, the stock-camera way: one full-screen
- * surface. Rotation, fill-crop, and uprighting happen inside [GlStreamer] —
- * the same pass that feeds the encoder, so what you see is exactly what
- * viewers get, in any hold. The UI's only jobs are handing its surface over
- * and reporting the current display rotation.
+ * Live viewfinder: a [PreviewView] in FILL_CENTER. CameraX owns every display
+ * transform — rotation, crop, OEM quirks — so the UI's only jobs are handing
+ * the provider over on resume and taking it back on pause. A live broadcast
+ * keeps the camera through its own GL use case either way.
  */
 @Composable
 fun CameraPreview(service: StreamService?, modifier: Modifier = Modifier) {
     val context = LocalContext.current
-    val surfaceView = remember(context) { SurfaceView(context) }
-
-    DisposableEffect(service) {
-        var attached = false
-
-        // Rotation is recomputed from the *live* display rotation on every
-        // push: reading it at composition time races service binding (the
-        // old "sideways preview" bug) and misses mid-hold changes.
-        fun push(width: Int, height: Int) {
-            val camera = service?.camera ?: return
-            if (width == 0 || height == 0 || !surfaceView.holder.surface.isValid) return
-            val sensor = camera.sensorOrientation()
-            val deviceRotation = (context.display?.rotation ?: 0) * 90
-            val upright = ((sensor - deviceRotation) % 360 + 360) % 360
-            if (!attached) {
-                attached = true
-                camera.setPreviewSurface(surfaceView.holder.surface, width, height, upright)
-            } else {
-                camera.updatePreviewTransform(width, height, upright)
+    val previewView = remember(context) {
+        PreviewView(context).apply { scaleType = PreviewView.ScaleType.FILL_CENTER }
+    }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(service, lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME ->
+                    service?.attachPreview(previewView.surfaceProvider)
+                Lifecycle.Event.ON_PAUSE -> service?.detachPreview()
+                else -> {}
             }
         }
-
-        val callbacks = object : SurfaceHolder.Callback {
-            override fun surfaceCreated(holder: SurfaceHolder) = Unit
-
-            override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-                push(width, height)
-            }
-
-            override fun surfaceDestroyed(holder: SurfaceHolder) {
-                attached = false
-                service?.camera?.setPreviewSurface(null, 0, 0, 0)
-            }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+            service?.attachPreview(previewView.surfaceProvider)
         }
-        surfaceView.holder.addCallback(callbacks)
-        if (surfaceView.holder.surface != null && surfaceView.width > 0) {
-            push(surfaceView.width, surfaceView.height)
-        }
-        val layoutListener = View.OnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
-            push(surfaceView.width, surfaceView.height)
-        }
-        surfaceView.addOnLayoutChangeListener(layoutListener)
         onDispose {
-            surfaceView.removeOnLayoutChangeListener(layoutListener)
-            surfaceView.holder.removeCallback(callbacks)
-            service?.camera?.setPreviewSurface(null, 0, 0, 0)
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            service?.detachPreview()
         }
     }
-
-    AndroidView(
-        factory = { surfaceView },
-        modifier = modifier.background(Color.Black),
-    )
+    AndroidView(factory = { previewView }, modifier = modifier.background(Color.Black))
 }
 /** The activity hosting this context, for orientation locks. */
 private fun findActivity(context: Context): Activity? {

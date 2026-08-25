@@ -3,32 +3,28 @@ package com.strym.app.capture
 import kotlin.math.abs
 
 /**
- * Pure geometry for the GL viewfinder pipeline, kept free of `android.*`
- * classes so the whole file runs in JVM unit tests: the camera output-size
- * choice and the fill/rotate matrix every render target (viewfinder, H.264
- * encoder) applies to the sensor-native camera frame.
+ * Pure geometry for the GL pipeline, kept free of `android.*`
+ * classes so the whole file runs in JVM unit tests: the fill/rotate matrix
+ * the H.264 encoder target applies to the sensor-native camera frame, and the
+ * SurfaceTexture-matrix classifier that detects HALs which pre-rotate buffer
+ * content (transposing ST) and need a half-turn on top of the standard
+ * sensor-orientation formula.
  */
 
-/** The largest preview output the camera offers that matches [aspect] without
- * exceeding [maxWidth] wide (quality-first: ties go to the larger area).
- * Falls back to the closest aspect when nothing is in range.
+/**
+ * The rotation correction some camera HALs need on top of the standard
+ * `(sensorOrientation - displayRotation)` formula, read off the linear block
+ * of the SurfaceTexture transform: a diagonal ±1 matrix (the Android-standard
+ * flip family) is exactly what the formula assumes. An anti-diagonal matrix
+ * — a transposing ST, observed on some OPPO/OnePlus HALs whose buffers arrive
+ * pre-rotated — makes the standard formula overshoot by a half turn.
+ * Returns 0 for the standard family, 180 for the transposing one.
  */
-fun choosePreviewSize(
-    sizes: List<Pair<Int, Int>>,
-    aspect: Float,
-    maxWidth: Int = 1920,
-): Pair<Int, Int>? {
-    if (sizes.isEmpty() || aspect <= 0f) return null
-    val candidates = sizes.filter { it.first in 640..maxWidth && it.second >= 480 }
-    val pool = if (candidates.isEmpty()) sizes else candidates
-    return pool.minWithOrNull(
-        compareBy<Pair<Int, Int>> { aspectDiff(it, aspect) }
-            .thenByDescending { it.first.toLong() * it.second },
-    )
+fun stQuirkCompensationDegrees(st: FloatArray): Int {
+    val diagonal = abs(st[0]) > 0.5f && abs(st[5]) > 0.5f
+    val antiDiagonal = abs(st[1]) > 0.5f && abs(st[4]) > 0.5f
+    return if (!diagonal && antiDiagonal) 180 else 0
 }
-
-private fun aspectDiff(size: Pair<Int, Int>, aspect: Float): Float =
-    abs(size.first.toFloat() / size.second - aspect)
 
 /**
  * Column-major 4x4 model-view-projection for drawing a sensor-native
