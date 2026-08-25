@@ -338,7 +338,9 @@ fun CameraPreview(service: StreamService?, modifier: Modifier = Modifier) {
     DisposableEffect(service) {
         val listener = object : TextureView.SurfaceTextureListener {
             override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
-                val size = service?.camera?.choosePreviewSize()
+                val isPortrait = (display?.rotation ?: 0) % 2 == 0
+                val size = service?.camera?.chooseNaturalPreviewSize(isPortrait)
+                    ?: service?.camera?.choosePreviewSize()
                 if (size != null) surface.setDefaultBufferSize(size.width, size.height)
                 chosenSize = size
                 service?.camera?.setPreviewSurface(Surface(surface), size)
@@ -346,7 +348,9 @@ fun CameraPreview(service: StreamService?, modifier: Modifier = Modifier) {
             }
 
             override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) {
-                val size = service?.camera?.choosePreviewSize()
+                val isPortrait = (display?.rotation ?: 0) % 2 == 0
+                val size = service?.camera?.chooseNaturalPreviewSize(isPortrait)
+                    ?: service?.camera?.choosePreviewSize()
                 if (size != null) surface.setDefaultBufferSize(size.width, size.height)
                 chosenSize = size
                 updateTransform()
