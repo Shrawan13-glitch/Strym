@@ -59,7 +59,6 @@ class GlStreamer {
     private var program = 0
     private var mvpLocation = 0
     private var stLocation = 0
-    private var bufLocation = 0
     private var texLocation = 0
     private var posLocation = 0
     private var uvLocation = 0
@@ -251,16 +250,18 @@ class GlStreamer {
     }
 
     private fun buildProgram() {
+        // The RootEncoder/Grafika scheme: geometry (rotation + fill-crop) lives
+        // only in uMVP on the position side; the camera's SurfaceTexture matrix
+        // is applied to the quad UVs exactly as the driver provides it.
         val vertex = """
             uniform mat4 uMVP;
-            uniform mat4 uInvST;
-            uniform mat4 uBuf;
+            uniform mat4 uST;
             attribute vec4 aPos;
             attribute vec4 aUV;
             varying vec2 vUV;
             void main() {
                 gl_Position = uMVP * aPos;
-                vUV = (uInvST * uBuf * aUV).xy;
+                vUV = (uST * aUV).xy;
             }
         """.trimIndent()
         val fragment = """
@@ -284,8 +285,7 @@ class GlStreamer {
                 "link failed: ${GLES20.glGetProgramInfoLog(created)}"
             }
             mvpLocation = GLES20.glGetUniformLocation(created, "uMVP")
-            stLocation = GLES20.glGetUniformLocation(created, "uInvST")
-            bufLocation = GLES20.glGetUniformLocation(created, "uBuf")
+            stLocation = GLES20.glGetUniformLocation(created, "uST")
             texLocation = GLES20.glGetUniformLocation(created, "uTex")
             posLocation = GLES20.glGetAttribLocation(created, "aPos")
             uvLocation = GLES20.glGetAttribLocation(created, "aUV")
@@ -302,12 +302,13 @@ class GlStreamer {
     private val quad: FloatBuffer by lazy {
         ByteBuffer.allocateDirect(16 * FLOAT_BYTES).order(ByteOrder.nativeOrder()).asFloatBuffer()
             .apply {
-                // x, y, u, v triangle strip covering the full target.
+                // x, y, u, v triangle strip covering the full target; v rises
+                // toward screen-top, matching the ST matrix's expected input.
                 put(floatArrayOf(
-                    -1f, -1f, 0f, 1f,
-                    1f, -1f, 1f, 1f,
-                    -1f, 1f, 0f, 0f,
-                    1f, 1f, 1f, 0f,
+                    -1f, -1f, 0f, 0f,
+                    1f, -1f, 1f, 0f,
+                    -1f, 1f, 0f, 1f,
+                    1f, 1f, 1f, 1f,
                 ))
                 position(0)
             }
@@ -338,9 +339,9 @@ class GlStreamer {
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, texture)
         GLES20.glUniform1i(texLocation, 0)
-        // Undo whatever flip/transpose the camera's ST carries; the per-target
-        // sampling transform then picks upright, fill-cropped texels.
-        GLES20.glUniformMatrix4fv(stLocation, 1, false, invertRigidTransform(stMatrix), 0)
+        // The camera's ST maps buffer-image coords to real texels; applied
+        // as-is, per RootEncoder/Grafika. Geometry stays in uMVP only.
+        GLES20.glUniformMatrix4fv(stLocation, 1, false, stMatrix, 0)
         quad.position(0)
         GLES20.glVertexAttribPointer(posLocation, 2, GLES20.GL_FLOAT, false, 4 * FLOAT_BYTES, quad)
         GLES20.glEnableVertexAttribArray(posLocation)
@@ -364,13 +365,6 @@ class GlStreamer {
         GLES20.glClearColor(0f, 0f, 0f, 1f)
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
         val size = bufferSize ?: return
-        GLES20.glUniformMatrix4fv(
-            bufLocation, 1, false,
-            glBufferSamplingTransform(
-                target.rotationDegrees, size.first, size.second, target.width, target.height,
-            ),
-            0,
-        )
         GLES20.glUniformMatrix4fv(
             mvpLocation, 1, false,
             glFillCropTransform(

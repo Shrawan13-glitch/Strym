@@ -105,61 +105,6 @@ class CameraMathTest {
         assertEquals(0.75f, y, 1e-6f)
     }
 
-    // --- glBufferSamplingTransform (input: clip-space quad, ±1) --------------
-
-    @Test
-    fun samplingMatchesGeometryForIdentity() {
-        // No rotation, equal dims: screen bottom-left samples buffer bottom-left.
-        val m = glBufferSamplingTransform(0, 1280, 720, 1280, 720)
-        assertEquals(0f, applyTransform(m, -1f, -1f).first, 1e-5f)
-        assertEquals(1f, applyTransform(m, -1f, -1f).second, 1e-5f)
-        assertEquals(1f, applyTransform(m, 1f, 1f).first, 1e-5f)
-        assertEquals(0f, applyTransform(m, 1f, 1f).second, 1e-5f)
-        assertEquals(0.5f, applyTransform(m, 0f, 0f).first, 1e-5f)
-        assertEquals(0.5f, applyTransform(m, 0f, 0f).second, 1e-5f)
-    }
-
-    @Test
-    fun samplingRotatesAgainstTheGeometry() {
-        // Portrait hold, sensor 90: the quad's corners land at rotated screen
-        // positions, so their sample points must come from the correspondingly
-        // rotated buffer corners (screen top-right ← buffer top-right).
-        val m = glBufferSamplingTransform(90, 1920, 1080, 1080, 2412)
-        val (x, y) = applyTransform(m, 1f, -1f)
-        assertEquals(1.0f, x, 1e-2f)
-        assertEquals(0.102f, y, 1e-2f)
-        // Center always samples the buffer center.
-        assertEquals(0.5f, applyTransform(m, 0f, 0f).first, 1e-5f)
-        assertEquals(0.5f, applyTransform(m, 0f, 0f).second, 1e-5f)
-    }
-
-    @Test
-    fun degenerateSamplingFallsBackToIdentity() {
-        val m = glBufferSamplingTransform(90, 0, 720, 1080, 2412)
-        assertEquals(-0.25f, applyTransform(m, -0.25f, 0.75f).first, 1e-6f)
-        assertEquals(0.75f, applyTransform(m, -0.25f, 0.75f).second, 1e-6f)
-    }
-
-    // --- invertRigidTransform -------------------------------------------------
-
-    @Test
-    fun rigidInverseUndoesTheTransform() {
-        // The camera ST observed on device: (s,t) = (1−v, 1−u).
-        val st = floatArrayOf(
-            0f, -1f, 0f, 0f,
-            -1f, 0f, 0f, 0f,
-            0f, 0f, 1f, 0f,
-            1f, 1f, 0f, 1f,
-        )
-        val inv = invertRigidTransform(st)
-        for (uv in listOf(0f to 0f, 1f to 0f, 0.3f to 0.7f, 1f to 1f)) {
-            val through = applyTransform(st, uv.first, uv.second)
-            val back = applyTransform(inv, through.first, through.second)
-            assertEquals(uv.first, back.first, 1e-5f)
-            assertEquals(uv.second, back.second, 1e-5f)
-        }
-    }
-
     /** The transformed quad must span the whole [-1,1]² view rect in NDC. */
     private fun assertCoversView(m: FloatArray) {
         val corners = listOf(
