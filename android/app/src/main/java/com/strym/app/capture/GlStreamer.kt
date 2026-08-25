@@ -81,7 +81,7 @@ class GlStreamer {
     fun start(bufferWidth: Int, bufferHeight: Int, onReady: (Surface) -> Unit) {
         handler.post {
             try {
-                initGl()
+                ensureInit()
                 surfaceTexture?.setDefaultBufferSize(bufferWidth, bufferHeight)
                 bufferSize = bufferWidth to bufferHeight
                 val st = surfaceTexture ?: error("no SurfaceTexture")
@@ -98,6 +98,7 @@ class GlStreamer {
     fun setViewfinder(surface: Surface?, width: Int, height: Int, rotationDegrees: Int) {
         handler.post {
             runCatching {
+                ensureInit()
                 viewfinder?.let { destroyTarget(it) }
                 viewfinder = surface?.let { makeTarget(it, width, height, rotationDegrees) }
             }.onFailure(::logFatal)
@@ -117,6 +118,7 @@ class GlStreamer {
     fun setEncoder(surface: Surface, width: Int, height: Int, rotationDegrees: Int) {
         handler.post {
             runCatching {
+                ensureInit()
                 encoderTarget?.let(::destroyTarget)
                 encoderTarget = makeTarget(surface, width, height, rotationDegrees)
             }.onFailure(::logFatal)
@@ -174,6 +176,11 @@ class GlStreamer {
 
     private fun logFatal(t: Throwable) {
         Log.e(TAG, "GL pipeline failure", t)
+    }
+
+    /** Lazily bring up the EGL world; safe to call from any GL-thread task. */
+    private fun ensureInit() {
+        if (program == 0) initGl()
     }
 
     private fun initGl() {
