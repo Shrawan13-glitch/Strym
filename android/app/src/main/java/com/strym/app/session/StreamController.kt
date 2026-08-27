@@ -34,15 +34,25 @@ private const val TAG = "StreamController"
  * [StreamPhase.EXHAUSTED] is reachable and the UI owns the "try again" /
  * "give up" decision. [portrait] is the device's hold at go-live: it fixes
  * the encoded shape (and the GL pipeline's uprighting) for the broadcast.
+ * When [actualWidth]/[actualHeight] are supplied (from EncoderCapabilities),
+ * they override the preset so FLV onMetaData matches the real encoder output
+ * — mismatched metadata is why YouTube shows "excellent" but never starts.
  */
-fun buildSessionConfig(settings: BroadcastSettings, portrait: Boolean): SessionConfig {
+fun buildSessionConfig(
+    settings: BroadcastSettings,
+    portrait: Boolean,
+    actualWidth: Int? = null,
+    actualHeight: Int? = null,
+): SessionConfig {
     val destination = RtmpDestination(
         url = settings.serverUrl.trim(),
         app = settings.app.trim(),
         streamKey = settings.streamKey.trim(),
         timeoutMs = 0uL,
     )
-    val (outWidth, outHeight) = settings.preset.outputSize(portrait)
+    val (presetW, presetH) = settings.preset.outputSize(portrait)
+    val outWidth = actualWidth ?: presetW
+    val outHeight = actualHeight ?: presetH
     val stream = StreamInfo(
         width = outWidth.toUInt(),
         height = outHeight.toUInt(),
@@ -121,11 +131,17 @@ class StreamController(
     /**
      * Create a session from [settings] and start it. Returns false (with the
      * reason in [uiState]) when the config or the start is rejected.
+     * Pass [actualWidth]/[actualHeight] when EncoderCapabilities has already
+     * clamped the preset to a supported size so metadata matches the wire.
      */
-    suspend fun goLive(settings: BroadcastSettings, portrait: Boolean): Boolean =
-        controlMutex.withLock {
-            if (gateway != null) return@withLock false
-            val config = buildSessionConfig(settings, portrait)
+    suspend fun goLive(
+        settings: BroadcastSettings,
+        portrait: Boolean,
+        actualWidth: Int? = null,
+        actualHeight: Int? = null,
+    ): Boolean = controlMutex.withLock {
+            if (gateway != null) return false
+            val config = buildSessionConfig(settings, portrait, actualWidth, actualHeight)
             _uiState.value = UiState(phase = StreamPhase.CONNECTING, hasSession = true)
             val created = try {
                 sessionFactory.create(config, listener)

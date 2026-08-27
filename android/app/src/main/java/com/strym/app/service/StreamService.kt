@@ -170,7 +170,22 @@ class StreamService : LifecycleService() {
             // change under us).
             val portrait =
                 resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT
-            if (!controller.goLive(settings, portrait)) {
+            // Pre-select encoder size so FLV onMetaData (StreamInfo) matches
+            // the actual wire resolution. Mismatched metadata (e.g. 1080p
+            // advertised but 720p sent after clamp) gates YouTube's "starting".
+            val (presetW, presetH) = settings.preset.outputSize(portrait)
+            val preSelection = com.strym.app.capture.EncoderCapabilities.select(
+                presetW, presetH, settings.videoBitrateBps
+            )
+            if (preSelection == null) {
+                controller.reportCaptureError("No H.264 encoder available on this device")
+                stopSelf()
+                return@launch
+            }
+            if (preSelection.size.width != presetW || preSelection.size.height != presetH) {
+                android.util.Log.w("StreamService", "preset ${presetW}x$presetH clamped to ${preSelection.size} for metadata")
+            }
+            if (!controller.goLive(settings, portrait, preSelection.size.width, preSelection.size.height)) {
                 stopSelf()
                 return@launch
             }
