@@ -58,10 +58,8 @@ object EncoderCapabilities {
         if (!tester(width, height)) {
             // Last resort: ask video capabilities for a size that is supported and closest to preset area.
             val fallbackSize = runCatching {
-                // Use the largest supported size <= preset by area, else smallest supported.
                 var best: Size? = null
                 var bestArea = -1
-                // Probe a few aspect-preserving candidates
                 val candidatesSizes = listOf(
                     Size(presetWidth, presetHeight),
                     Size((presetWidth and 0x7FFF_FFFE), (presetHeight and 0x7FFF_FFFE)),
@@ -69,7 +67,7 @@ object EncoderCapabilities {
                     Size(video.supportedWidths.lower, video.supportedHeights.lower),
                 )
                 for (s in candidatesSizes) {
-                    if (video.isSizeSupported(s.width, s.height)) {
+                    if (runCatching { video.isSizeSupported(s.width, s.height) }.getOrDefault(false)) {
                         val area = s.width * s.height
                         if (area <= presetWidth * presetHeight && area > bestArea) {
                             best = s; bestArea = area
@@ -77,8 +75,8 @@ object EncoderCapabilities {
                     }
                 }
                 best
-            }.getOrNull() ?: return Selection(fallback.name, Size(width, height))
-            if (fallbackSize != null) return Selection(fallback.name, fallbackSize)
+            }.getOrNull()
+            fallbackSize?.let { return Selection(fallback.name, it) }
         }
         return Selection(fallback.name, Size(width, height))
     }

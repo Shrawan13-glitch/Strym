@@ -59,8 +59,10 @@ class VideoPts(
         val ms = when (mode) {
             Mode.WALL -> {
                 if (rawPtsUs <= 0) {
-                    // Zero/invalid timestamp in WALL mode: fallback to wall delivery to avoid stalling at -1.
-                    deliveryWallMs - nominalLatencyMs - clock.originMs
+                    // Zero/invalid stamp after WALL lock: hold monotonic (tests expect this),
+                    // but for the very first frame (lastMs==-1) fallback to wall to avoid -1.
+                    if (lastMs < 0) deliveryWallMs - nominalLatencyMs - clock.originMs
+                    else lastMs
                 } else {
                     rawPtsUs / 1_000L - clock.originMs
                 }
