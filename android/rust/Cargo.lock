@@ -465,12 +465,12 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 [[package]]
 name = "stream"
 version = "1.0.0"
-source = "git+https://github.com/Shrawan13-glitch/strym-core.git?rev=8de4874#8de487468a9dec25a6d2a17c65e49e774f078502"
+source = "git+https://github.com/Shrawan13-glitch/strym-core.git?rev=0852824#0852824df1ae72039c3befe6dbe88c64e965416b"
 
 [[package]]
 name = "stream-ffi"
 version = "1.0.0"
-source = "git+https://github.com/Shrawan13-glitch/strym-core.git?rev=8de4874#8de487468a9dec25a6d2a17c65e49e774f078502"
+source = "git+https://github.com/Shrawan13-glitch/strym-core.git?rev=0852824#0852824df1ae72039c3befe6dbe88c64e965416b"
 dependencies = [
  "stream",
  "uniffi",

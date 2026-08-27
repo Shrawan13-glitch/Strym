@@ -46,7 +46,9 @@ class GlStreamer {
         @Volatile var rotationDegrees: Int,
     )
 
-    private val thread = HandlerThread("stry-gl").also { it.start() }
+    // GL thread at DISPLAY priority — same class as video encoder to avoid starvation
+    // under OEM scheduler (seen on OnePlus/Oppo where default-priority GL froze 1-3s).
+    private val thread = HandlerThread("stry-gl", android.os.Process.THREAD_PRIORITY_DISPLAY).also { it.start() }
     private val handler = Handler(thread.looper)
 
     private var display: EGLDisplay = EGL14.EGL_NO_DISPLAY

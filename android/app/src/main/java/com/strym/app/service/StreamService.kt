@@ -180,37 +180,76 @@ class StreamService : LifecycleService() {
             } else {
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
             }
-            ServiceCompat.startForeground(
-                this@StreamService,
-                NOTIFICATION_ID,
-                buildNotification(StreamPhase.CONNECTING),
-                types,
-            )
+            try {
+                ServiceCompat.startForeground(
+                    this@StreamService,
+                    NOTIFICATION_ID,
+                    buildNotification(StreamPhase.CONNECTING),
+                    types,
+                )
+            } catch (e: SecurityException) {
+                android.util.Log.e("StreamService", "startForeground failed", e)
+                controller.reportCaptureError("Could not start foreground service: ${e.message}")
+                controller.stopSession()
+                stopSelf()
+                return@launch
+            } catch (e: Exception) {
+                android.util.Log.e("StreamService", "startForeground failed", e)
+                // Fallback: try without type (older OS)
+                try {
+                    ServiceCompat.startForeground(
+                        this@StreamService,
+                        NOTIFICATION_ID,
+                        buildNotification(StreamPhase.CONNECTING),
+                        0,
+                    )
+                } catch (e2: Exception) {
+                    android.util.Log.e("StreamService", "fallback startForeground failed", e2)
+                    controller.reportCaptureError("Could not promote to foreground: ${e2.message}")
+                    controller.stopSession()
+                    stopSelf()
+                    return@launch
+                }
+            }
+            // Acquire power/wifi locks BEFORE capture so initial frames don't stall on radio sleep.
+            acquireWakeLock()
+            acquireWifiLock()
             val clock = SessionClock()
             camera.startEncoding(settings, portrait, controller, ::captureFailed, clock)
             if (settings.audioEnabled) {
                 audio.start(controller, ::captureFailed, clock)
             }
-            acquireWakeLock()
-            acquireWifiLock()
         }
     }
 
     /** Hold a partial wake lock while live so Doze cannot starve capture. */
     private fun acquireWakeLock() {
         if (wakeLock?.isHeld == true) return
-        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "strym:stream").also {
-            it.setReferenceCounted(false)
-            it.acquire()
+        try {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "strym:stream").also {
+                it.setReferenceCounted(false)
+                // 30 min timeout as safety if service dies without release; re-acquired on goLive anyway.
+                it.acquire(30 * 60 * 1000L)
+            }
+            android.util.Log.i("StreamService", "wake lock acquired")
+        } catch (e: SecurityException) {
+            android.util.Log.w("StreamService", "wake lock SecurityException", e)
+        } catch (e: Exception) {
+            android.util.Log.w("StreamService", "wake lock failed", e)
         }
     }
 
     private fun releaseWakeLock() {
-        wakeLock?.let {
-            if (it.isHeld) it.release()
+        try {
+            wakeLock?.let {
+                if (it.isHeld) it.release()
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("StreamService", "wake lock release failed", e)
+        } finally {
+            wakeLock = null
         }
-        wakeLock = null
     }
 
     /**
@@ -222,24 +261,50 @@ class StreamService : LifecycleService() {
      */
     private fun acquireWifiLock() {
         if (wifiLock?.isHeld == true) return
-        val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-        val mode = if (Build.VERSION.SDK_INT >= 29) {
-            WifiManager.WIFI_MODE_FULL_LOW_LATENCY
-        } else {
+        try {
             @Suppress("DEPRECATION")
-            WifiManager.WIFI_MODE_FULL_HIGH_PERF
-        }
-        wifiLock = wm.createWifiLock(mode, "strym:wifi").also {
-            it.setReferenceCounted(false)
-            it.acquire()
+            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager ?: run {
+                android.util.Log.w("StreamService", "WifiManager unavailable")
+                return
+            }
+            if (!wm.isWifiEnabled) {
+                android.util.Log.i("StreamService", "WiFi not enabled, skipping wifi lock")
+                return
+            }
+            val mode = if (Build.VERSION.SDK_INT >= 29) {
+                WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+            } else {
+                @Suppress("DEPRECATION")
+                WifiManager.WIFI_MODE_FULL_HIGH_PERF
+            }
+            val lock = try {
+                wm.createWifiLock(mode, "strym:wifi")
+            } catch (e: Exception) {
+                android.util.Log.w("StreamService", "createWifiLock mode=$mode failed, fallback HIGH_PERF", e)
+                @Suppress("DEPRECATION")
+                wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "strym:wifi")
+            }
+            lock.setReferenceCounted(false)
+            lock.acquire()
+            wifiLock = lock
+            android.util.Log.i("StreamService", "wifi lock acquired mode=$mode")
+        } catch (e: SecurityException) {
+            android.util.Log.w("StreamService", "wifi lock SecurityException (missing CHANGE_WIFI_STATE?)", e)
+        } catch (e: Exception) {
+            android.util.Log.w("StreamService", "wifi lock failed", e)
         }
     }
 
     private fun releaseWifiLock() {
-        wifiLock?.let {
-            if (it.isHeld) it.release()
+        try {
+            wifiLock?.let {
+                if (it.isHeld) it.release()
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("StreamService", "wifi lock release failed", e)
+        } finally {
+            wifiLock = null
         }
-        wifiLock = null
     }
 
     /** Stop the session, leave the foreground, and release the start. */

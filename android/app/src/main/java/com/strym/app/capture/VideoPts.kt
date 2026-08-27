@@ -53,13 +53,35 @@ class VideoPts(
                 cameraMs >= minPlausibleCameraMs &&
                 (deliveryWallMs - cameraMs) in 0..maxLatencyMs
             mode = if (wallSynced) Mode.WALL else Mode.LATENCY
+            // Log mode decision for diagnostics (only once per session)
+            android.util.Log.i("VideoPts", "mode=$mode cameraMs=$cameraMs wallMs=$deliveryWallMs")
         }
         val ms = when (mode) {
-            Mode.WALL -> if (rawPtsUs > 0) rawPtsUs / 1_000L - clock.originMs else lastMs
+            Mode.WALL -> {
+                if (rawPtsUs <= 0) {
+                    // Zero/invalid timestamp in WALL mode: fallback to wall delivery to avoid stalling at -1.
+                    deliveryWallMs - nominalLatencyMs - clock.originMs
+                } else {
+                    rawPtsUs / 1_000L - clock.originMs
+                }
+            }
             Mode.LATENCY -> deliveryWallMs - nominalLatencyMs - clock.originMs
             Mode.UNKNOWN -> 0L
         }
-        val monotonic = if (ms > lastMs) ms else lastMs
+        // Ensure monotonic: small backward jitter (< maxLatency) is clamped, not rejected.
+        // Also guard against huge forward jumps (>5s) which indicate clock reset — allow but log.
+        val monotonic = if (ms > lastMs) {
+            if (lastMs >= 0 && ms - lastMs > 5000) {
+                android.util.Log.w("VideoPts", "large forward jump ${ms - lastMs}ms (dts=$ms last=$lastMs)")
+            }
+            ms
+        } else {
+            // Clamp small backward slips to monotonic; large backward would have triggered mode logic.
+            if (lastMs - ms > maxLatencyMs) {
+                android.util.Log.w("VideoPts", "clamping backward ${lastMs - ms}ms (dts=$ms last=$lastMs)")
+            }
+            lastMs
+        }
         lastMs = monotonic
         return monotonic
     }

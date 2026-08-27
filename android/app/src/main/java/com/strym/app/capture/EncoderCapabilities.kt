@@ -24,19 +24,62 @@ object EncoderCapabilities {
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
             setInteger(MediaFormat.KEY_BIT_RATE, bitrateBps)
         }
-        list.findEncoderForFormat(probe)?.let {
-            return Selection(it, Size(presetWidth, presetHeight))
+        // Fast path: any encoder that directly supports the preset (common case).
+        // Try all candidates, not just the first, preferring hardware (OMX.qcom, c2.qti) over software.
+        val candidates = list.codecInfos.filter { surfaceAvcEncoder(it) }
+            .sortedWith(compareBy(
+                { if (it.name.contains("qcom", true) || it.name.contains("qti", true)) 0 else 1 },
+                { it.name }
+            ))
+        for (info in candidates) {
+            val fmt = MediaFormat.createVideoFormat(MIME_AVC, presetWidth, presetHeight).apply {
+                setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
+            }
+            if (runCatching { info.getCapabilitiesForType(MIME_AVC).isFormatSupported(fmt) }.getOrDefault(false)) {
+                return Selection(info.name, Size(presetWidth, presetHeight))
+            }
         }
-        val fallback = list.codecInfos.firstOrNull { info -> surfaceAvcEncoder(info) } ?: return null
+        // Fallback: pick the best surface AVC encoder and search for a supported size.
+        val fallback = candidates.firstOrNull() ?: return null
         val video = runCatching {
             fallback.getCapabilitiesForType(MIME_AVC).videoCapabilities
         }.getOrNull() ?: return null
-        val (width, height) = EncoderSizeSelector.choose(
+        val tester: (Int, Int) -> Boolean = { w, h ->
+            runCatching { video.isSizeSupported(w, h) }.getOrDefault(false)
+        }
+        val (width, height) = EncoderSizeSelector.chooseWithTester(
             presetWidth,
             presetHeight,
             EncoderSizeSelector.Range(video.supportedWidths.lower, video.supportedWidths.upper),
             EncoderSizeSelector.Range(video.supportedHeights.lower, video.supportedHeights.upper),
+            tester,
         )
+        // Final validation: if even the clamped size is unsupported, try to query supported sizes directly.
+        if (!tester(width, height)) {
+            // Last resort: ask video capabilities for a size that is supported and closest to preset area.
+            val fallbackSize = runCatching {
+                // Use the largest supported size <= preset by area, else smallest supported.
+                var best: Size? = null
+                var bestArea = -1
+                // Probe a few aspect-preserving candidates
+                val candidatesSizes = listOf(
+                    Size(presetWidth, presetHeight),
+                    Size((presetWidth and 0x7FFF_FFFE), (presetHeight and 0x7FFF_FFFE)),
+                    Size(1280, 720), Size(960, 540), Size(854, 480), Size(640, 360),
+                    Size(video.supportedWidths.lower, video.supportedHeights.lower),
+                )
+                for (s in candidatesSizes) {
+                    if (video.isSizeSupported(s.width, s.height)) {
+                        val area = s.width * s.height
+                        if (area <= presetWidth * presetHeight && area > bestArea) {
+                            best = s; bestArea = area
+                        }
+                    }
+                }
+                best
+            }.getOrNull() ?: return Selection(fallback.name, Size(width, height))
+            if (fallbackSize != null) return Selection(fallback.name, fallbackSize)
+        }
         return Selection(fallback.name, Size(width, height))
     }
 

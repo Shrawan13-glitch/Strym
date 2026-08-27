@@ -49,12 +49,27 @@ class CameraStreamer(private val context: Context, lifecycleOwner: LifecycleOwne
     /**
      * Display rotation, read lazily: a Service context has no display and
      * `Context.getDisplay()` throws for background contexts — asking at
-     * construction time crashed every service start.
+     * construction time crashed every service start. Uses modern `Context.display`
+     * on API 30+ to handle folding/multi-window; falls back to WindowManager on older.
      */
     private fun displayRotationDegrees(): Int {
-        val wm = context.getSystemService(Context.WINDOW_SERVICE) as? WindowManager
-        @Suppress("DEPRECATION")
-        return (wm?.defaultDisplay?.rotation ?: Surface.ROTATION_0) * 90
+        // Modern path: Service/Application may still have a display via context.display on API 30+.
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            val displayRotation = try {
+                context.display?.rotation
+            } catch (_: Exception) {
+                null
+            }
+            if (displayRotation != null) return displayRotation * 90
+        }
+        return try {
+            val wm = context.getSystemService(Context.WINDOW_SERVICE) as? WindowManager
+            @Suppress("DEPRECATION")
+            val rot = wm?.defaultDisplay?.rotation ?: Surface.ROTATION_0
+            rot * 90
+        } catch (_: Exception) {
+            0
+        }
     }
 
     private var encoder: VideoEncoder? = null
@@ -72,7 +87,7 @@ class CameraStreamer(private val context: Context, lifecycleOwner: LifecycleOwne
     // healthy and viewers see a frozen frame instead of a dead stream.
     private val heartbeat = Executors.newSingleThreadScheduledExecutor { runnable ->
         Thread(runnable, "stry-heartbeat").apply {
-            priority = Thread.MIN_PRIORITY + 1
+            priority = Thread.NORM_PRIORITY
             isDaemon = true
         }
     }
@@ -80,8 +95,7 @@ class CameraStreamer(private val context: Context, lifecycleOwner: LifecycleOwne
     @Volatile
     private var lastFrameWallMs = 0L
 
-    @Volatile
-    private var lastPushedDtsMs = -1L
+    private val lastPushedDtsMs = java.util.concurrent.atomic.AtomicLong(-1L)
 
     @Volatile
     private var lastKeyframe: ByteArray? = null
@@ -89,7 +103,12 @@ class CameraStreamer(private val context: Context, lifecycleOwner: LifecycleOwne
     @Volatile
     private var clock: SessionClock? = null
 
+    @Volatile
     private var lastHeartbeatWallMs = 0L
+
+    @Volatile
+    private var heartbeatScheduled = false
+    private var heartbeatFuture: java.util.concurrent.ScheduledFuture<*>? = null
 
     /** Sensor orientation in degrees of clockwise rotation to upright. */
     fun sensorOrientation(): Int = cameraId?.let { id ->
@@ -161,6 +180,10 @@ class CameraStreamer(private val context: Context, lifecycleOwner: LifecycleOwne
         encoding = true
         this.clock = clock
         lastFrameWallMs = SystemClock.elapsedRealtimeNanos() / 1_000_000L
+        lastHeartbeatWallMs = 0L
+        lastPushedDtsMs.set(-1L)
+        lastKeyframe = null
+        videoLog = 0
         startHeartbeat()
         // Upright the sensor frame for the hold captured at go-live; the
         // encoded canvas matches, so viewers see upright portrait or
@@ -195,6 +218,9 @@ class CameraStreamer(private val context: Context, lifecycleOwner: LifecycleOwne
 
     /** Release the GL pipeline and camera bindings; safe after teardown. */
     fun close() {
+        try { heartbeatFuture?.cancel(true) } catch (_: Exception) {}
+        heartbeatFuture = null
+        heartbeatScheduled = false
         heartbeat.shutdownNow()
         encoder?.stop()
         encoder = null
@@ -214,7 +240,9 @@ class CameraStreamer(private val context: Context, lifecycleOwner: LifecycleOwne
     }
 
     private fun startHeartbeat() {
-        heartbeat.scheduleWithFixedDelay(
+        if (heartbeatScheduled) return
+        heartbeatScheduled = true
+        heartbeatFuture = heartbeat.scheduleWithFixedDelay(
             {
                 try {
                     pumpHeartbeat()
@@ -223,7 +251,7 @@ class CameraStreamer(private val context: Context, lifecycleOwner: LifecycleOwne
                 }
             },
             HEARTBEAT_INTERVAL_MS,
-            500,
+            HEARTBEAT_INTERVAL_MS,
             TimeUnit.MILLISECONDS,
         )
     }
@@ -232,17 +260,37 @@ class CameraStreamer(private val context: Context, lifecycleOwner: LifecycleOwne
     private fun pumpHeartbeat() {
         if (!encoding) return
         val sink = ingest ?: return
+        // Don't heartbeat if we haven't yet produced a keyframe (stream not yet primed).
         val keyframe = lastKeyframe ?: return
         val nowMs = SystemClock.elapsedRealtimeNanos() / 1_000_000L
-        if (nowMs - lastFrameWallMs < VIDEO_STALE_MS) return
+        val staleFor = nowMs - lastFrameWallMs
+        if (staleFor < VIDEO_STALE_MS) return
         if (nowMs - lastHeartbeatWallMs < HEARTBEAT_INTERVAL_MS) return
+        // Double-check encoding still true after time checks to avoid race with stopEncoding.
+        if (!encoding) return
         lastHeartbeatWallMs = nowMs
         // Same wall-clock base the live track uses, clamped forward so the
-        // heartbeat can never move the track's dts backwards.
+        // heartbeat can never move the track's dts backwards. Add explicit
+        // monotonic clamp against last pushed to handle concurrent encoder frame.
         val origin = clock?.originMs ?: return
-        val dtsMs = maxOf(nowMs - origin, lastPushedDtsMs + 1)
-        Log.w(TAG, "video stale ${nowMs - lastFrameWallMs}ms; pushing IDR heartbeat dts=$dtsMs")
-        sink.pushVideo(dtsMs, true, keyframe)
+        val wallDts = nowMs - origin
+        // Guard against wall clock going backwards (should not happen with elapsedRealtime, but be safe)
+        if (wallDts < 0) return
+        val last = lastPushedDtsMs.get()
+        val dtsMs = maxOf(wallDts, last + HEARTBEAT_INTERVAL_MS)
+        // CAS to prevent duplicate DTS from concurrent video frame
+        if (!lastPushedDtsMs.compareAndSet(last, dtsMs)) {
+            // Another frame advanced the clock concurrently; retry next tick
+            return
+        }
+        Log.w(TAG, "video stale ${staleFor}ms; pushing IDR heartbeat dts=$dtsMs keyframe=${keyframe.size}B")
+        try {
+            sink.pushVideo(dtsMs, true, keyframe)
+        } catch (e: Exception) {
+            Log.w(TAG, "heartbeat push failed", e)
+            // Roll back on failure to allow retry
+            lastPushedDtsMs.compareAndSet(dtsMs, last)
+        }
     }
 
     private val encoderListener = object : VideoEncoder.Listener {
@@ -252,16 +300,25 @@ class CameraStreamer(private val context: Context, lifecycleOwner: LifecycleOwne
 
         override fun onFrame(ptsMs: Long, isKeyframe: Boolean, annexB: ByteArray) {
             if (videoLog++ % 30 == 0) {
-                Log.d(TAG, "VIDEO dts=$ptsMs wall=${SystemClock.elapsedRealtimeNanos() / 1_000_000L}")
+                Log.d(TAG, "VIDEO dts=$ptsMs wall=${SystemClock.elapsedRealtimeNanos() / 1_000_000L} key=$isKeyframe size=${annexB.size}")
             }
             lastFrameWallMs = SystemClock.elapsedRealtimeNanos() / 1_000_000L
-            if (ptsMs > lastPushedDtsMs) lastPushedDtsMs = ptsMs
+            // Atomic max to handle heartbeat race
+            while (true) {
+                val cur = lastPushedDtsMs.get()
+                if (ptsMs <= cur) break
+                if (lastPushedDtsMs.compareAndSet(cur, ptsMs)) break
+            }
             if (isKeyframe) {
                 // Cheap enough at one IDR per 2 s, and it is what the
                 // heartbeat re-sends when the camera disappears.
                 lastKeyframe = annexB.copyOf()
             }
-            ingest?.pushVideo(ptsMs, isKeyframe, annexB)
+            try {
+                ingest?.pushVideo(ptsMs, isKeyframe, annexB)
+            } catch (e: Exception) {
+                Log.w(TAG, "pushVideo failed dts=$ptsMs", e)
+            }
         }
 
         override fun onError(message: String) {

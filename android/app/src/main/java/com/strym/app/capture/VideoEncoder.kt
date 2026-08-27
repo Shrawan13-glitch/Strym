@@ -80,13 +80,16 @@ class VideoEncoder(private val listener: Listener, private val clock: SessionClo
         val name = codecName
             ?: MediaCodecList(MediaCodecList.REGULAR_CODECS).findEncoderForFormat(format)
             ?: throw VideoEncoderException("No H.264 encoder available on this device")
-        val worker = HandlerThread("stry-encoder").also { it.start() }
+        // Priority is set via HandlerThread constructor, not racy handler.post().
+        // DISPLAY keeps it ahead of background work without colliding with URGENT_AUDIO.
+        val worker = HandlerThread("stry-encoder", Process.THREAD_PRIORITY_DISPLAY).also { it.start() }
         val handler = Handler(worker.looper)
-        // Same starvation class as the audio bug: at default priority the
-        // encoder callback thread freezes under OEM scheduler load and video
-        // stops flowing. Display priority keeps it ahead of background work
-        // without competing with the audio thread's urgent band.
-        runCatching { handler.post { Process.setThreadPriority(Process.THREAD_PRIORITY_DISPLAY) } }
+        // Ensure the looper thread's Linux priority took effect; if not, set explicitly.
+        runCatching {
+            // HandlerThread with priority already calls setThreadPriority in run(),
+            // but double-check after start because some OEMs reset it.
+            handler.post { Process.setThreadPriority(Process.THREAD_PRIORITY_DISPLAY) }
+        }
         try {
             var created = MediaCodec.createByCodecName(name)
             created.setCallback(callback, handler)
